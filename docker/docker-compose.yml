@@ -29,8 +29,6 @@ services:
     build:
       context: ../docker/asr
       dockerfile: Dockerfile.asr
-      args:
-        MODEL_URL=${ASR_MODEL_URL:-}
     ports:
       - "8888:8888"
     volumes:
@@ -38,6 +36,7 @@ services:
     environment:
       - ASR_MODEL_PATH=/models/qwen3-asr-0.6b-int8.gguf
       - ASR_PORT=8888
+      - MODEL_URL=${ASR_MODEL_URL:-}
     restart: unless-stopped
     # Increase shared memory for llama.cpp
     shm_size: '2gb'

@@ -16,6 +16,7 @@ LLAMA_CPP_DIR = os.environ.get("LLAMA_CPP_DIR", "/llama.cpp")
 LLAMA_CLI = os.path.join(LLAMA_CPP_DIR, "llama-cli")
 LLAMA_SERVER = os.path.join(LLAMA_CPP_DIR, "llama-server")
 PORT = int(os.environ.get("ASR_PORT", "8888"))
+MODEL_URL = os.environ.get("MODEL_URL", "")
 
 # Use llama-server if available, otherwise fall back to llama-cli
 USE_SERVER = os.path.isfile(LLAMA_SERVER)
@@ -93,12 +94,30 @@ class ASRHandler(BaseHTTPRequestHandler):
         print(f"[ASR] {self.address_string()} - {format % args}", flush=True)
 
 
+def download_model():
+    """Download model from MODEL_URL if set and model doesn't exist."""
+    if not MODEL_URL:
+        return
+    if os.path.isfile(MODEL_PATH):
+        print(f"[ASR] Model already exists: {MODEL_PATH}")
+        return
+    print(f"[ASR] Downloading model from: {MODEL_URL}")
+    subprocess.run(["curl", "-L", "-o", MODEL_PATH, MODEL_URL, "--progress-bar"], check=True)
+    size_mb = os.path.getsize(MODEL_PATH) / 1024 / 1024
+    print(f"[ASR] Model downloaded: {MODEL_PATH} ({size_mb:.1f} MB)")
+
+
 def main():
-    # Check model exists
+    # Try to download model if URL is configured
+    try:
+        download_model()
+    except Exception as e:
+        print(f"[ASR] Model download failed: {e}")
+
     if not os.path.isfile(MODEL_PATH):
         print(f"[ASR] WARNING: Model not found at {MODEL_PATH}")
         print("[ASR] The server will start but inference will fail.")
-        print("[ASR] Download the model and mount it to the container.")
+        print("[ASR] Set MODEL_URL env or mount the model to /models/")
 
     server = HTTPServer(("0.0.0.0", PORT), ASRHandler)
     print(f"[ASR] Server listening on 0.0.0.0:{PORT}", flush=True)

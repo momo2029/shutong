@@ -38,10 +38,10 @@ RUN chmod +x download_model.sh
 
 EXPOSE 8888
 
-# Download model at build time (or mount at runtime)
-ARG MODEL_URL=""
-RUN if [ -n "$MODEL_URL" ]; then \
-        ./download_model.sh "$MODEL_URL"; \
-    fi
+# Model is NOT downloaded at build time — it requires auth on gitcode.
+# The download_model.sh script is kept for runtime use.
+# Your options:
+#   1. Download manually and mount to /models/
+#   2. Set MODEL_URL env to a direct download link and run ./download_model.sh at startup
 
 CMD ["python3", "llama_server.py"]
