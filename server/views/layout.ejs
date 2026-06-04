@@ -1,0 +1,23 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title><%= typeof title !== 'undefined' ? title + ' - ' : '' %>书童</title>
+  <link rel="stylesheet" href="/public/css/app.css">
+  <link rel="manifest" href="/public/manifest.json">
+</head>
+<body>
+  <%- include('partials/header', { user }) %>
+  <main class="container">
+    <%- body %>
+  </main>
+  <%- include('partials/footer') %>
+  <script src="/public/js/app.js"></script>
+  <script>
+    if ('serviceWorker' in navigator) {
+      navigator.serviceWorker.register('/public/sw.js');
+    }
+  </script>
+</body>
+</html>

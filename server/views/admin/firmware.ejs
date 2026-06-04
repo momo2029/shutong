@@ -1,0 +1,25 @@
+<h2>固件管理</h2>
+<div class="card mt-2">
+  <form action="/api/admin/firmware" method="POST" enctype="multipart/form-data">
+    <div class="form-group">
+      <label>设备类型</label>
+      <select name="deviceType" class="form-input">
+        <option value="standard">标准版</option>
+        <option value="flagship">旗舰版</option>
+      </select>
+    </div>
+    <div class="form-group">
+      <label>版本号</label>
+      <input type="text" name="version" class="form-input" placeholder="1.0.1" required>
+    </div>
+    <div class="form-group">
+      <label>固件文件</label>
+      <input type="file" name="firmware" class="form-input" required>
+    </div>
+    <div class="form-group">
+      <label>更新日志</label>
+      <textarea name="changelog" class="form-input" rows="3"></textarea>
+    </div>
+    <button type="submit" class="btn btn-primary">上传</button>
+  </form>
+</div>

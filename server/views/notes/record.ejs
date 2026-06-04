@@ -1,0 +1,19 @@
+<h2>网页录音</h2>
+<div class="card mt-2 text-center" style="padding:40px;">
+  <div id="recorder">
+    <p class="text-muted mb-2">使用浏览器麦克风录制课堂音频</p>
+    <button id="startBtn" class="btn btn-primary" style="font-size:18px;padding:12px 32px;" onclick="toggleRecord()">
+      开始录音
+    </button>
+    <p id="timer" class="text-muted mt-2" style="font-size:24px;">00:00</p>
+    <audio id="preview" controls style="display:none;margin-top:16px;width:100%"></audio>
+    <div id="uploadArea" style="display:none;margin-top:16px;">
+      <div class="form-group">
+        <label>笔记标题</label>
+        <input type="text" id="title" class="form-input" placeholder="输入标题">
+      </div>
+      <button class="btn btn-primary" onclick="uploadAudio()">上传并生成笔记</button>
+    </div>
+  </div>
+</div>
+<script src="/public/js/recorder.js"></script>

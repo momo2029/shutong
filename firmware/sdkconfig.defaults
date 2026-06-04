@@ -1,0 +1,28 @@
+# ─── Target selection (set via idf.py set-target) ───
+# For standard:  idf.py set-target esp32
+# For flagship:  idf.py set-target esp32s3
+
+# ─── Partition ───
+CONFIG_PARTITION_TABLE_CUSTOM=y
+CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"
+
+# ─── WiFi ───
+CONFIG_ESP_WIFI_STA_DISCONNECTED_PM_ENABLE=n
+CONFIG_LWIP_TCP_SYNMAXRTX=3
+
+# ─── TLS ───
+CONFIG_MBEDTLS_CERTIFICATE_BUNDLE=y
+CONFIG_MBEDTLS_CERTIFICATE_BUNDLE_DEFAULT_FULL=y
+
+# ─── Watchdog (keep enabled for safety) ───
+CONFIG_ESP_TASK_WDT_TIMEOUT_S=10
+
+# ─── OTA ───
+CONFIG_ESP_HTTPS_OTA=y
+
+# ─── 书童 Kconfig defaults ───
+CONFIG_SHUTONG_STANDARD=y
+CONFIG_SHUTONG_SN="SHT-000001"
+CONFIG_MQTT_BROKER_URL="mqtt://shutong.3198.net:1883"
+CONFIG_WIFI_SSID_DEFAULT="13"
+CONFIG_WIFI_PASS_DEFAULT="333666999"

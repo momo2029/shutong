@@ -1,0 +1,70 @@
+<div class="card" style="max-width:400px;margin:40px auto;text-align:center;">
+  <h2 style="margin-bottom:8px;">微信扫码登录</h2>
+  <p class="text-muted mb-2">关注公众号后扫码获取验证码</p>
+
+  <!-- QR Code -->
+  <div id="qrcode" style="display:inline-block;padding:16px;background:#fff;border:1px solid var(--border);border-radius:8px;">
+    <p class="text-muted">加载中...</p>
+  </div>
+  <p id="qrcodeHint" class="text-muted" style="font-size:12px;margin-top:4px;display:none;">二维码10分钟内有效</p>
+
+  <!-- Code input -->
+  <div id="codeArea" style="margin-top:16px;">
+    <p class="text-muted" style="font-size:13px;">扫码后微信会发送4位验证码，输入下方完成登录</p>
+    <form id="verifyForm" style="display:flex;gap:8px;justify-content:center;margin-top:8px;">
+      <input type="text" id="code" class="form-input" placeholder="4位验证码" maxlength="4"
+             style="width:120px;text-align:center;font-size:20px;letter-spacing:8px;" autocomplete="off">
+      <button type="submit" class="btn btn-primary">验证登录</button>
+    </form>
+    <p id="verifyError" style="color:#dc2626;font-size:13px;margin-top:4px;display:none;"></p>
+  </div>
+
+  <p class="text-muted mt-2" style="font-size:11px;">
+    未关注公众号？请微信搜索并关注后重新扫码
+  </p>
+</div>
+
+<script>
+let sessionId = '';
+
+(async () => {
+  try {
+    const res = await fetch('/api/auth/wechat/qrcode', { method: 'POST', headers: {'Content-Type':'application/json'}, body: '{}' });
+    const data = await res.json();
+    if (data.sessionId) {
+      sessionId = data.sessionId;
+      document.getElementById('qrcode').innerHTML = '<img src="' + data.qrcodeUrl + '" width="200" height="200" alt="微信扫码" style="display:block;">';
+      document.getElementById('qrcodeHint').style.display = 'block';
+    } else {
+      document.getElementById('qrcode').innerHTML = '<p style="color:#dc2626;">获取二维码失败</p>';
+    }
+  } catch(e) {
+    document.getElementById('qrcode').innerHTML = '<p style="color:#dc2626;">网络错误，请刷新重试</p>';
+  }
+})();
+
+document.getElementById('verifyForm').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const code = document.getElementById('code').value;
+  if (!sessionId || code.length !== 4) return;
+
+  try {
+    const res = await fetch('/api/auth/wechat/verify', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ sessionId, code }),
+    });
+    const data = await res.json();
+    if (data.ok) {
+      window.location.href = '/';
+    } else {
+      const err = document.getElementById('verifyError');
+      err.textContent = data.error || '验证失败';
+      err.style.display = 'block';
+    }
+  } catch(ex) {
+    document.getElementById('verifyError').textContent = '网络错误';
+    document.getElementById('verifyError').style.display = 'block';
+  }
+});
+</script>

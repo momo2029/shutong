@@ -1,0 +1,159 @@
+#include "shutong_wifi.h"
+#include "esp_log.h"
+#include "esp_wifi.h"
+#include "esp_event.h"
+#include "nvs_flash.h"
+#include "freertos/event_groups.h"
+#include <string.h>
+
+static const char *TAG = "sht-wifi";
+static EventGroupHandle_t s_evt;
+static bool s_connected = false;
+static char s_ip[16] = {0};
+static int s_rssi = 0;
+
+// Pending connect pattern (producer-consumer, avoids event loop deadlock)
+static volatile bool s_connect_pending = false;
+static char s_pending_ssid[33];
+static char s_pending_pass[65];
+
+#define WIFI_CONNECTED_BIT BIT0
+#define WIFI_FAIL_BIT      BIT1
+
+static void event_handler(void *arg, esp_event_base_t base, int32_t id, void *data) {
+  if (base == WIFI_EVENT) {
+    if (id == WIFI_EVENT_STA_START) {
+      esp_wifi_connect();
+    } else if (id == WIFI_EVENT_STA_DISCONNECTED) {
+      s_connected = false;
+      s_ip[0] = '\0';
+      xEventGroupSetBits(s_evt, WIFI_FAIL_BIT);
+    }
+  } else if (base == IP_EVENT && id == IP_EVENT_STA_GOT_IP) {
+    ip_event_got_ip_t *ev = (ip_event_got_ip_t *)data;
+    snprintf(s_ip, sizeof(s_ip), IPSTR, IP2STR(&ev->ip_info.ip));
+    s_connected = true;
+    esp_wifi_set_ps(WIFI_PS_NONE);
+    ESP_LOGI(TAG, "STA IP: %s", s_ip);
+    xEventGroupSetBits(s_evt, WIFI_CONNECTED_BIT);
+  }
+}
+
+static void nvs_save_creds(const char *ssid, const char *pass) {
+  nvs_handle_t h;
+  if (nvs_open("wifi", NVS_READWRITE, &h) == ESP_OK) {
+    nvs_set_str(h, "ssid", ssid);
+    nvs_set_str(h, "pass", pass);
+    nvs_commit(h);
+    nvs_close(h);
+  }
+}
+
+void shutong_wifi_init(void) {
+  nvs_flash_init();
+  s_evt = xEventGroupCreate();
+
+  esp_netif_init();
+  esp_event_loop_create_default();
+  esp_netif_create_default_wifi_sta();
+  wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
+  esp_wifi_init(&cfg);
+
+  esp_event_handler_instance_register(WIFI_EVENT, ESP_EVENT_ANY_ID, event_handler, NULL, NULL);
+  esp_event_handler_instance_register(IP_EVENT, IP_EVENT_STA_GOT_IP, event_handler, NULL, NULL);
+
+  esp_wifi_set_mode(WIFI_MODE_STA);
+
+  // Try NVS saved credentials
+  nvs_handle_t h;
+  char ssid[33] = {0}, pass[65] = {0};
+  size_t len = sizeof(ssid);
+  if (nvs_open("wifi", NVS_READONLY, &h) == ESP_OK) {
+    nvs_get_str(h, "ssid", ssid, &len);
+    len = sizeof(pass);
+    nvs_get_str(h, "pass", pass, &len);
+    nvs_close(h);
+  }
+
+  if (ssid[0]) {
+    ESP_LOGI(TAG, "Trying saved: %s", ssid);
+    if (shutong_wifi_connect(ssid, pass)) return;
+  }
+
+  // Fallback: default credentials
+  ESP_LOGI(TAG, "Trying default credentials...");
+  if (shutong_wifi_connect("13", "333666999")) return;
+
+  // AP mode fallback
+  ESP_LOGI(TAG, "Starting AP provisioning mode");
+  shutong_wifi_start_ap();
+}
+
+bool shutong_wifi_connect(const char *ssid, const char *pass) {
+  s_evt = s_evt ? s_evt : xEventGroupCreate();
+  xEventGroupClearBits(s_evt, WIFI_CONNECTED_BIT | WIFI_FAIL_BIT);
+
+  wifi_config_t cfg = {0};
+  strncpy((char *)cfg.sta.ssid, ssid, 32);
+  strncpy((char *)cfg.sta.password, pass, 64);
+  cfg.sta.threshold.authmode = WIFI_AUTH_WPA2_PSK;
+
+  esp_wifi_set_config(WIFI_IF_STA, &cfg);
+  esp_wifi_start();
+
+  EventBits_t bits = xEventGroupWaitBits(s_evt, WIFI_CONNECTED_BIT | WIFI_FAIL_BIT,
+                                          pdFALSE, pdFALSE, pdMS_TO_TICKS(15000));
+  if (bits & WIFI_CONNECTED_BIT) {
+    nvs_save_creds(ssid, pass);
+    esp_netif_t *netif = esp_netif_get_handle_from_ifkey("WIFI_STA_DEF");
+    esp_netif_set_hostname(netif, "shutong");
+    return true;
+  }
+  esp_wifi_stop();
+  return false;
+}
+
+void shutong_wifi_request_connect(const char *ssid, const char *pass) {
+  strncpy(s_pending_ssid, ssid, 32);
+  strncpy(s_pending_pass, pass, 64);
+  s_connect_pending = true;
+}
+
+bool shutong_wifi_has_pending(void) { return s_connect_pending; }
+
+void shutong_wifi_process_pending(void) {
+  if (!s_connect_pending) return;
+  s_connect_pending = false;
+  ESP_LOGI(TAG, "Processing pending connect: %s", s_pending_ssid);
+  if (shutong_wifi_connect(s_pending_ssid, s_pending_pass)) {
+    ESP_LOGI(TAG, "Connected, restarting app...");
+    vTaskDelay(pdMS_TO_TICKS(1000));
+    esp_restart();
+  }
+}
+
+void shutong_wifi_start_ap(void) {
+  esp_netif_create_default_wifi_ap();
+  wifi_config_t cfg = {
+    .ap = {
+      .ssid = "shutong-Setup",
+      .ssid_len = 0,
+      .password = "",
+      .channel = 1,
+      .authmode = WIFI_AUTH_OPEN,
+      .max_connection = 4,
+    },
+  };
+  esp_wifi_set_mode(WIFI_MODE_AP);
+  esp_wifi_set_config(WIFI_IF_AP, &cfg);
+  esp_wifi_start();
+  ESP_LOGI(TAG, "AP: shutong-Setup (open)");
+}
+
+bool shutong_wifi_is_connected(void) { return s_connected; }
+int  shutong_wifi_rssi(void) {
+  wifi_ap_record_t ap;
+  if (esp_wifi_sta_get_ap_info(&ap) == ESP_OK) s_rssi = ap.rssi;
+  return s_rssi;
+}
+char *shutong_wifi_get_ip(void) { return s_ip; }

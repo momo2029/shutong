@@ -1,0 +1,42 @@
+import { getEnv } from '../config.js';
+
+export async function generateSummary(transcript: string): Promise<string> {
+  return callLLM('请对以下课堂文稿生成结构化摘要：\n\n' + transcript);
+}
+
+export async function generateExamPoints(transcript: string): Promise<string> {
+  return callLLM('请从以下课堂内容中提取考试重点，以JSON列表返回：\n\n' + transcript);
+}
+
+export async function generateMindMap(transcript: string): Promise<string> {
+  return callLLM('请将以下课堂内容生成思维导图JSON结构：\n\n' + transcript);
+}
+
+export async function askKnowledge(question: string, context: string): Promise<string> {
+  return callLLM(`基于以下笔记内容回答问题。\n\n笔记：${context}\n\n问题：${question}`);
+}
+
+async function callLLM(prompt: string): Promise<string> {
+  const env = getEnv();
+  if (!env.LLM_API_KEY || !env.LLM_API_URL) {
+    console.log('[LLM] No API configured, returning placeholder');
+    return '';
+  }
+
+  const res = await fetch(env.LLM_API_URL, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${env.LLM_API_KEY}`,
+    },
+    body: JSON.stringify({
+      model: 'gpt-4o-mini',
+      messages: [{ role: 'user', content: prompt }],
+      max_tokens: 2000,
+    }),
+  });
+
+  const data = await res.json() as Record<string, unknown>;
+  const choice = (data.choices as Array<{ message: { content: string } }>)?.[0];
+  return choice?.message?.content || '';
+}

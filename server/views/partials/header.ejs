@@ -1,0 +1,20 @@
+<header class="header">
+  <div class="header-inner">
+    <a href="/" class="logo">书童</a>
+    <nav class="nav">
+      <a href="/notes">笔记</a>
+      <a href="/courses">课程</a>
+      <a href="/devices">设备</a>
+      <a href="/knowledge/ask">知识库</a>
+    </nav>
+    <div class="user-area">
+      <% if (user) { %>
+        <span><%= user.nickname || user.email %></span>
+        <a href="/auth/logout">退出</a>
+      <% } else { %>
+        <a href="/auth/login">登录</a>
+        <a href="/auth/register">注册</a>
+      <% } %>
+    </div>
+  </div>
+</header>

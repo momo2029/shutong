@@ -1,0 +1,14 @@
+<h2>绑定设备</h2>
+<div class="card" style="max-width:400px;margin-top:20px;">
+  <form action="/api/devices/bind" method="POST" id="bindForm">
+    <div class="form-group">
+      <label>设备序列号（SN）</label>
+      <input type="text" name="sn" class="form-input" placeholder="请输入设备底部的SN码" required>
+    </div>
+    <div class="form-group">
+      <label>设备名称</label>
+      <input type="text" name="name" class="form-input" placeholder="例如：高数课录音笔">
+    </div>
+    <button type="submit" class="btn btn-primary" style="width:100%">绑定</button>
+  </form>
+</div>

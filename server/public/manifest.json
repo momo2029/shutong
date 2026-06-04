@@ -1,0 +1,10 @@
+{
+  "name": "书童 - 课堂AI笔记助手",
+  "short_name": "书童",
+  "description": "随堂录音，AI自动生成笔记",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#f8fafc",
+  "theme_color": "#4f46e5",
+  "icons": []
+}

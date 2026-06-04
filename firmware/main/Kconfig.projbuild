@@ -1,0 +1,31 @@
+menu "书童 硬件配置"
+
+choice SHUTONG_VARIANT
+    prompt "硬件版本"
+    default SHUTONG_STANDARD
+
+config SHUTONG_STANDARD
+    bool "标准版 (ESP32, 无摄像头)"
+config SHUTONG_FLAGSHIP
+    bool "旗舰版 (ESP32-S3, OV2640摄像头)"
+endchoice
+
+config SHUTONG_SN
+    string "设备序列号 (SN)"
+    default "SHT-DEV-001"
+    help
+        设备唯一序列号，出厂烧录。用于MQTT topic和云端绑定。
+
+config MQTT_BROKER_URL
+    string "MQTT Broker URL"
+    default "mqtt://shutong.3198.net:1883"
+
+config WIFI_SSID_DEFAULT
+    string "默认WiFi SSID"
+    default "13"
+
+config WIFI_PASS_DEFAULT
+    string "默认WiFi密码"
+    default "333666999"
+
+endmenu
