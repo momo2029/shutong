@@ -11,6 +11,7 @@ services:
       - PORT=3000
       - JWT_SECRET=${JWT_SECRET:-change-me-in-production}
       - MQTT_BROKER=${MQTT_BROKER:-mqtt://emqx:1883}
+      - MQTT_PASSWORD=${MQTT_PASSWORD:-shutong_mqtt_pass}
       - QINIU_ACCESS_KEY=${QINIU_ACCESS_KEY:-}
       - QINIU_SECRET_KEY=${QINIU_SECRET_KEY:-}
       - QINIU_BUCKET=${QINIU_BUCKET:-shutong3198}

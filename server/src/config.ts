@@ -2,6 +2,7 @@ const env = {
   PORT: parseInt(process.env.PORT || '3000'),
   JWT_SECRET: process.env.JWT_SECRET || 'shutong-dev-secret-change-in-prod',
   MQTT_BROKER: process.env.MQTT_BROKER || 'mqtt://127.0.0.1:1883',
+  MQTT_PASSWORD: process.env.MQTT_PASSWORD || '',
   QINIU_ACCESS_KEY: process.env.QINIU_ACCESS_KEY || '',
   QINIU_SECRET_KEY: process.env.QINIU_SECRET_KEY || '',
   QINIU_BUCKET: process.env.QINIU_BUCKET || 'shutong-media',

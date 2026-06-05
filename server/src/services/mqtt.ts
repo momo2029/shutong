@@ -70,6 +70,8 @@ export function initMQTT() {
   client = mqtt.connect(env.MQTT_BROKER, {
     clientId: 'sht_svr',
     clean: true,
+    username: 'sht_svr',
+    password: env.MQTT_PASSWORD || 'shutong_mqtt_pass',
   });
 
   client.on('connect', () => {
