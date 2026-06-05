@@ -12,18 +12,14 @@ RUN apt-get update && apt-get install -y \
     python3-pip \
     && rm -rf /var/lib/apt/lists/*
 
-# Clone and build llama.cpp with CUDA/CPU support
+# Clone and build llama.cpp (CPU only)
 WORKDIR /llama.cpp
 RUN git clone https://github.com/ggerganov/llama.cpp.git . && \
-    cmake -B build -DGGML_CPU=ON && \
+    cmake -B build -DGGML_CPU=ON -DCMAKE_BUILD_TYPE=Release && \
     cmake --build build --config Release -j$(nproc)
 
-# Copy binaries to /usr/local/bin
-RUN cp build/bin/llama-cli /usr/local/bin/ && \
-    cp build/bin/llama-server /usr/local/bin/ 2>/dev/null; true
-
-# Install Python dependencies
-RUN pip3 install --no-cache-dir numpy
+# Copy binary
+RUN cp build/bin/llama-cli /usr/local/bin/
 
 # Create model directory
 RUN mkdir -p /models
@@ -32,16 +28,6 @@ RUN mkdir -p /models
 WORKDIR /app
 COPY llama_server.py .
 
-# Download model script
-COPY download_model.sh .
-RUN chmod +x download_model.sh
-
 EXPOSE 8888
-
-# Model is NOT downloaded at build time — it requires auth on gitcode.
-# The download_model.sh script is kept for runtime use.
-# Your options:
-#   1. Download manually and mount to /models/
-#   2. Set MODEL_URL env to a direct download link and run ./download_model.sh at startup
 
 CMD ["python3", "llama_server.py"]

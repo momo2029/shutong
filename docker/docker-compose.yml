@@ -10,7 +10,7 @@ services:
     environment:
       - PORT=3000
       - JWT_SECRET=${JWT_SECRET:-change-me-in-production}
-      - MQTT_BROKER=mqtt://emqx:1883
+      - MQTT_BROKER=${MQTT_BROKER:-mqtt://emqx:1883}
       - QINIU_ACCESS_KEY=${QINIU_ACCESS_KEY:-}
       - QINIU_SECRET_KEY=${QINIU_SECRET_KEY:-}
       - QINIU_BUCKET=${QINIU_BUCKET:-shutong-media}
@@ -23,7 +23,6 @@ services:
     restart: unless-stopped
     depends_on:
       - emqx
-      - asr
 
   asr:
     build:
@@ -34,11 +33,9 @@ services:
     volumes:
       - ./data/asr-models:/models
     environment:
-      - ASR_MODEL_PATH=/models/qwen3-asr-0.6b-int8.gguf
+      - ASR_MODEL_PATH=/models/Qwen3-ASR-0.6B-Q8_0.gguf
       - ASR_PORT=8888
-      - MODEL_URL=${ASR_MODEL_URL:-}
     restart: unless-stopped
-    # Increase shared memory for llama.cpp
     shm_size: '2gb'
 
   emqx:
