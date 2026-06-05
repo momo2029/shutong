@@ -43,7 +43,7 @@ app.use('/public/*', serveStatic({ root: '.' }));
 // EJS page routes
 app.get('/', (c) => c.var.render('dashboard/index.ejs', { title: '工作台' }));
 app.get('/auth/login', (c) => c.var.render('auth/login.ejs', { title: '微信登录' }));
-app.get('/auth/register', (c) => c.redirect(301, '/auth/login'));
+app.get('/auth/register', (c) => c.redirect('/auth/login'));
 app.get('/auth/logout', (c) => {
   c.header('Set-Cookie', 'token=; HttpOnly; Path=/; Max-Age=0');
   return c.redirect('/auth/login');
@@ -54,7 +54,12 @@ app.get('/courses', (c) => c.var.render('courses/list.ejs', { title: '课程' })
 app.get('/courses/new', (c) => c.var.render('courses/form.ejs', { title: '新建课程' }));
 app.get('/courses/:id/edit', (c) => c.var.render('courses/form.ejs', { title: '编辑课程' }));
 app.get('/notes', (c) => c.var.render('notes/list.ejs', { title: '笔记' }));
-app.get('/notes/record', (c) => c.var.render('notes/record.ejs', { title: '录音' }));
+app.get('/notes/record', (c) => {
+  const cookie = c.req.header('cookie') || '';
+  const match = cookie.match(/token=([^;]+)/);
+  if (!match) return c.redirect('/auth/login');
+  return c.var.render('notes/record.ejs', { title: '录音' });
+});
 app.get('/notes/search', (c) => c.var.render('notes/search.ejs', { title: '搜索笔记' }));
 app.get('/notes/:id', (c) => c.var.render('notes/detail.ejs', { title: '笔记详情' }));
 app.get('/knowledge/ask', (c) => c.var.render('knowledge/ask.ejs', { title: '知识库问答' }));
