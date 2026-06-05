@@ -19,7 +19,7 @@ export async function uploadFile(
 }
 
 async function uploadToQiniu(key: string, body: Buffer | Uint8Array): Promise<UploadResult> {
-  const qiniu = await import('qiniu');
+  const qiniu = (await import('qiniu')).default || await import('qiniu');
   const mac = new qiniu.auth.digest.Mac(env.QINIU_ACCESS_KEY, env.QINIU_SECRET_KEY);
   const putPolicy = new qiniu.rs.PutPolicy({ scope: `${env.QINIU_BUCKET}:${key}` });
   const uploadToken = putPolicy.uploadToken(mac);
