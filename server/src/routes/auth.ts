@@ -5,7 +5,7 @@ import { eq } from 'drizzle-orm';
 import { v4 as uuid } from 'uuid';
 import { signJWT } from '../utils/jwt.js';
 
-const WX_BASE = 'https://wx.xgrt.com.cn';
+const WX_BASE = 'https://wx.3198.net';
 const app = new Hono();
 
 // POST /api/auth/wechat/qrcode — proxy to WeChat auth service

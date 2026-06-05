@@ -13,8 +13,8 @@ services:
       - MQTT_BROKER=${MQTT_BROKER:-mqtt://emqx:1883}
       - QINIU_ACCESS_KEY=${QINIU_ACCESS_KEY:-}
       - QINIU_SECRET_KEY=${QINIU_SECRET_KEY:-}
-      - QINIU_BUCKET=${QINIU_BUCKET:-shutong-media}
-      - QINIU_DOMAIN=${QINIU_DOMAIN:-}
+      - QINIU_BUCKET=${QINIU_BUCKET:-shutong3198}
+      - QINIU_DOMAIN=${QINIU_DOMAIN:-shutong3198.3198.net}
       - BASE_URL=https://shutong.3198.net
       - ASR_SERVICE_URL=http://asr:8888
       - OCR_API_KEY=${OCR_API_KEY:-}
