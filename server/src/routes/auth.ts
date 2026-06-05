@@ -57,7 +57,7 @@ app.post('/wechat/verify', async (c) => {
   }
 
   const token = await signJWT({ sub: user.id });
-  c.header('Set-Cookie', `token=${token}; HttpOnly; Path=/; Max-Age=604800; SameSite=Lax`);
+  c.header('Set-Cookie', `token=${token}; HttpOnly; Secure; Path=/; Max-Age=604800; SameSite=Lax`);
   return c.json({ ok: true });
 });
 
