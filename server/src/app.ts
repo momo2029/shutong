@@ -43,7 +43,7 @@ app.use('/public/*', serveStatic({ root: '.' }));
 // EJS page routes
 app.get('/', (c) => c.var.render('dashboard/index.ejs', { title: '工作台' }));
 app.get('/auth/login', (c) => c.var.render('auth/login.ejs', { title: '微信登录' }));
-app.get('/auth/register', (c) => c.var.render('auth/register.ejs', { title: '注册' }));
+app.get('/auth/register', (c) => c.redirect(301, '/auth/login'));
 app.get('/auth/logout', (c) => {
   c.header('Set-Cookie', 'token=; HttpOnly; Path=/; Max-Age=0');
   return c.redirect('/auth/login');

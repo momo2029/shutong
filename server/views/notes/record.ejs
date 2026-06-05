@@ -16,4 +16,10 @@
     </div>
   </div>
 </div>
+<script>
+  // 未登录跳转
+  fetch('/api/auth/me').then(r=>r.json()).then(d=>{
+    if(!d.user) window.location.href='/auth/login';
+  });
+</script>
 <script src="/public/js/recorder.js"></script>
