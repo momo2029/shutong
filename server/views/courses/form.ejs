@@ -1,18 +1,33 @@
-<h2>课程信息</h2>
+<% const isEdit = typeof course !== 'undefined' && course; %>
+<h2><%= isEdit ? '编辑课程' : '新建课程' %></h2>
 <div class="card" style="max-width:500px;margin-top:20px;">
-  <form action="/api/courses" method="POST" id="courseForm">
+  <form id="courseForm">
     <div class="form-group">
       <label>课程名称</label>
-      <input type="text" name="name" class="form-input" required>
+      <input type="text" name="name" class="form-input" required value="<%= isEdit ? course.name : '' %>">
     </div>
     <div class="form-group">
       <label>学期</label>
-      <input type="text" name="semester" class="form-input" placeholder="例如：2025-春">
+      <input type="text" name="semester" class="form-input" placeholder="例如：2025-春" value="<%= isEdit ? course.semester : '' %>">
     </div>
     <div class="form-group">
       <label>描述</label>
-      <textarea name="description" class="form-input" rows="3"></textarea>
+      <textarea name="description" class="form-input" rows="3"><%= isEdit ? course.description : '' %></textarea>
     </div>
     <button type="submit" class="btn btn-primary">保存</button>
   </form>
 </div>
+
+<script>
+document.getElementById('courseForm').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const fd = new FormData(e.target);
+  const body = new URLSearchParams();
+  for (const [k, v] of fd) body.append(k, v);
+  const isEdit = '<%= isEdit %>' === 'true';
+  const url = isEdit ? '/api/courses/<%= isEdit ? course.id : "" %>' : '/api/courses';
+  const resp = await fetch(url, { method: isEdit ? 'PUT' : 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body });
+  if (resp.ok) { window.location.href = '/courses'; }
+  else { const data = await resp.json(); alert(data.error || '保存失败'); }
+});
+</script>

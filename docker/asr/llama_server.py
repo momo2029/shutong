@@ -11,10 +11,9 @@ import subprocess
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from pathlib import Path
 
-MODEL_PATH = os.environ.get("ASR_MODEL_PATH", "/models/qwen3-asr-0.6b-int8.gguf")
-LLAMA_CPP_DIR = os.environ.get("LLAMA_CPP_DIR", "/llama.cpp")
-LLAMA_CLI = os.path.join(LLAMA_CPP_DIR, "llama-cli")
-LLAMA_SERVER = os.path.join(LLAMA_CPP_DIR, "llama-server")
+MODEL_PATH = os.environ.get("ASR_MODEL_PATH", "/models/Qwen3-ASR-0.6B-Q8_0.gguf")
+LLAMA_CLI = os.environ.get("LLAMA_CLI", "/usr/local/bin/llama-cli")
+LLAMA_SERVER = os.environ.get("LLAMA_SERVER", "/usr/local/bin/llama-server")
 PORT = int(os.environ.get("ASR_PORT", "8888"))
 MODEL_URL = os.environ.get("MODEL_URL", "")
 

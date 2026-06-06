@@ -12,3 +12,27 @@
   <h4>回答</h4>
   <div id="answerContent"></div>
 </div>
+
+<script>
+document.getElementById('askForm').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const question = e.target.question.value.trim();
+  if (!question) return;
+  const btn = e.target.querySelector('button');
+  btn.disabled = true; btn.textContent = '思考中...';
+  try {
+    const resp = await fetch('/api/knowledge/ask', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ question })
+    });
+    const data = await resp.json();
+    document.getElementById('answerContent').textContent = data.answer || data.error || '无回答';
+    document.getElementById('answer').style.display = '';
+  } catch (err) {
+    alert('请求失败: ' + err.message);
+  } finally {
+    btn.disabled = false; btn.textContent = '提问';
+  }
+});
+</script>

@@ -3,8 +3,7 @@
 #include <stddef.h>
 #include <stdbool.h>
 
-// Init I2S microphone (INMP441 or built-in MEMS mic)
-// sck=14, ws=21, sd=33 (avoids camera pins on ESP32-S3)
+// Init I2S PDM microphone (DFR1154: CLK=38, DATA=39)
 void shutong_audio_init(void);
 
 // Read samples: 16kHz, mono, 16-bit PCM. Returns samples read.

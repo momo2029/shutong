@@ -1,6 +1,6 @@
 <h2>绑定设备</h2>
 <div class="card" style="max-width:400px;margin-top:20px;">
-  <form action="/api/devices/bind" method="POST" id="bindForm">
+  <form id="bindForm">
     <div class="form-group">
       <label>设备序列号（SN）</label>
       <input type="text" name="sn" class="form-input" placeholder="请输入设备底部的SN码" required>
@@ -9,6 +9,21 @@
       <label>设备名称</label>
       <input type="text" name="name" class="form-input" placeholder="例如：高数课录音笔">
     </div>
+    <div id="bindMsg" style="margin-bottom:12px;"></div>
     <button type="submit" class="btn btn-primary" style="width:100%">绑定</button>
   </form>
 </div>
+
+<script>
+document.getElementById('bindForm').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const fd = new FormData(e.target);
+  const body = new URLSearchParams();
+  for (const [k, v] of fd) body.append(k, v);
+  const resp = await fetch('/api/devices/bind', { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body });
+  const data = await resp.json();
+  const msg = document.getElementById('bindMsg');
+  if (resp.ok) { msg.innerHTML = '<div style="color:green">绑定成功！<a href="/devices">查看设备列表</a></div>'; e.target.reset(); }
+  else { msg.innerHTML = '<div style="color:red">' + (data.error || '绑定失败') + '</div>'; }
+});
+</script>

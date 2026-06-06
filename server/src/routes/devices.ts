@@ -16,7 +16,9 @@ app.get('/', (c) => {
 });
 
 app.post('/bind', async (c) => {
-  const { sn, name } = await c.req.json<{ sn: string; name?: string }>();
+  const body = await c.req.parseBody();
+  const sn = (body.sn as string || '').trim();
+  const name = body.name as string | undefined;
   if (!sn || sn.length < 4) return c.json({ error: '无效的设备序列号' }, 400);
   if (db.select().from(devices).where(eq(devices.sn, sn)).get()) return c.json({ error: '该设备已被绑定' }, 409);
 

@@ -22,7 +22,10 @@ app.get('/:id', (c) => {
 });
 
 app.post('/', async (c) => {
-  const { name, semester, description } = await c.req.json<{ name: string; semester?: string; description?: string }>();
+  const body = await c.req.parseBody();
+  const name = (body.name as string || '').trim();
+  const semester = body.semester as string | undefined;
+  const description = body.description as string | undefined;
   if (!name) return c.json({ error: '课程名称不能为空' }, 400);
   const id = uuid();
   db.insert(courses).values({ id, userId: c.var.user.id, name, semester: semester || '', description: description || '' }).run();
@@ -31,7 +34,10 @@ app.post('/', async (c) => {
 
 app.put('/:id', async (c) => {
   const id = c.req.param('id');
-  const { name, semester, description } = await c.req.json<{ name?: string; semester?: string; description?: string }>();
+  const body = await c.req.parseBody();
+  const name = (body.name as string || '').trim() || undefined;
+  const semester = body.semester as string | undefined;
+  const description = body.description as string | undefined;
   const course = db.select().from(courses).where(and(eq(courses.id, id), eq(courses.userId, c.var.user.id))).get();
   if (!course) return c.json({ error: '课程不存在' }, 404);
   db.update(courses).set({ name: name || course.name, semester: semester ?? course.semester, description: description ?? course.description }).where(eq(courses.id, id)).run();

@@ -8,6 +8,7 @@
 #include "esp_https_ota.h"
 #include "nvs_flash.h"
 #include "driver/gpio.h"
+#include "esp_http_server.h"
 #include "cJSON.h"
 
 #include "shutong_wifi.h"
@@ -21,9 +22,10 @@
 
 static const char *TAG = "sht-main";
 
-// GPIO: button + LED
-#define BTN_RECORD  GPIO_NUM_0   // Boot button (standard)
-#define LED_STATUS  GPIO_NUM_2   // Onboard LED
+// GPIO: button + LED (DFR1154 pinout)
+#define BTN_RECORD  GPIO_NUM_0   // Boot button
+#define LED_STATUS  GPIO_NUM_3   // Onboard LED (DFR1154)
+#define IR_LED      GPIO_NUM_47  // IR LED for night vision
 #ifdef CONFIG_SHUTONG_FLAGSHIP
 #define BTN_CAMERA  GPIO_NUM_1   // Extra button for photo (flagship)
 #endif
@@ -65,7 +67,7 @@ static void heartbeat_task(void *arg) {
 }
 
 // ─── Audio upload ───────────────────────────────────────────
-#define AUDIO_CHUNK_SAMPLES (16000 * 10) // 10 seconds per chunk
+#define AUDIO_CHUNK_SAMPLES (16000 * 2) // 2 seconds per chunk (64KB)
 
 static void send_audio_chunk(const int16_t *buf, int samples) {
   cJSON *json = proto_build_audio_chunk(s_note_id, s_chunk_seq, s_chunk_total,
@@ -77,7 +79,16 @@ static void send_audio_chunk(const int16_t *buf, int samples) {
 }
 
 static void record_task(void *arg) {
-  int16_t buf[AUDIO_CHUNK_SAMPLES];
+  int16_t *buf = heap_caps_calloc(AUDIO_CHUNK_SAMPLES, sizeof(int16_t),
+                                   MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+  if (!buf) buf = heap_caps_calloc(AUDIO_CHUNK_SAMPLES, sizeof(int16_t),
+                                    MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+  if (!buf) buf = calloc(AUDIO_CHUNK_SAMPLES, sizeof(int16_t));
+  if (!buf) {
+    ESP_LOGE(TAG, "Failed to alloc record buffer");
+    vTaskDelete(NULL);
+    return;
+  }
   while (1) {
     if (!s_recording || !shutong_mqtt_is_connected()) {
       vTaskDelay(pdMS_TO_TICKS(100));
@@ -98,7 +109,8 @@ static void record_task(void *arg) {
 
 // ─── Buttons ────────────────────────────────────────────────
 static void button_task(void *arg) {
-  bool last_btn = true;
+  vTaskDelay(pdMS_TO_TICKS(2000)); // Ignore boot-time button state
+  bool last_btn = gpio_get_level(BTN_RECORD);
 #ifdef CONFIG_SHUTONG_FLAGSHIP
   bool last_cam = true;
 #endif
@@ -266,6 +278,10 @@ void app_main(void) {
   gpio_reset_pin(BTN_CAMERA);
   gpio_set_direction(BTN_CAMERA, GPIO_MODE_INPUT);
   gpio_set_pull_mode(BTN_CAMERA, GPIO_PULLUP_ONLY);
+  // IR LED for night vision (off by default)
+  gpio_reset_pin(IR_LED);
+  gpio_set_direction(IR_LED, GPIO_MODE_OUTPUT);
+  gpio_set_level(IR_LED, 0);
 #endif
 
   // Audio
@@ -278,6 +294,7 @@ void app_main(void) {
     // Camera (flagship only)
 #ifdef CONFIG_SHUTONG_FLAGSHIP
     shutong_camera_init();
+    shutong_camera_stream_start();
 #endif
 
     // MQTT
@@ -285,7 +302,7 @@ void app_main(void) {
 
     // Tasks
     xTaskCreate(heartbeat_task, "hb", 2048, NULL, 1, NULL);
-    xTaskCreate(record_task, "record", 8192, NULL, 5, NULL);
+    xTaskCreate(record_task, "record", 16384, NULL, 5, NULL);
     xTaskCreate(button_task, "btn", 2048, NULL, 3, NULL);
 
     // Wait for MQTT connection then send online status

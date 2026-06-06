@@ -1,3 +1,11 @@
+// Safety net: prevent 3rd-party SDK async errors from crashing the process
+process.on('unhandledRejection', (reason) => {
+  console.error('[process] unhandledRejection:', reason);
+});
+process.on('uncaughtException', (err) => {
+  console.error('[process] uncaughtException:', err.message);
+});
+
 import { serve } from '@hono/node-server';
 import app from './app.js';
 import { getEnv } from './config.js';

@@ -1,28 +1,49 @@
 #include "shutong_camera.h"
 #include "esp_log.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
 
 static const char *TAG = "sht-cam";
+
+// DFR1154 OV3660 DVP pinout
+#define XCLK_GPIO   5
+#define SIOD_GPIO   8   // SCCB SDA
+#define SIOC_GPIO   9   // SCCB SCL
+#define Y9_GPIO     4   // D7
+#define Y8_GPIO     6   // D6
+#define Y7_GPIO     7   // D5
+#define Y6_GPIO     14  // D4
+#define Y5_GPIO     17  // D3
+#define Y4_GPIO     21  // D2
+#define Y3_GPIO     18  // D1
+#define Y2_GPIO     16  // D0
+#define VSYNC_GPIO  1
+#define HREF_GPIO   2
+#define PCLK_GPIO   15
 
 void shutong_camera_init(void) {
   camera_config_t cfg = {
     .pin_pwdn = -1,
     .pin_reset = -1,
-    .pin_xclk = 15,
-    .pin_sccb_sda = 4,
-    .pin_sccb_scl = 5,
-    .pin_d7 = 16, .pin_d6 = 17, .pin_d5 = 18, .pin_d4 = 12,
-    .pin_d3 = 10, .pin_d2 = 8,  .pin_d1 = 9,  .pin_d0 = 11,
-    .pin_vsync = 6,
-    .pin_href = 7,
-    .pin_pclk = 13,
+    .pin_xclk = XCLK_GPIO,
+    .pin_sccb_sda = SIOD_GPIO,
+    .pin_sccb_scl = SIOC_GPIO,
+    .pin_d7 = Y9_GPIO,   .pin_d6 = Y8_GPIO,
+    .pin_d5 = Y7_GPIO,   .pin_d4 = Y6_GPIO,
+    .pin_d3 = Y5_GPIO,   .pin_d2 = Y4_GPIO,
+    .pin_d1 = Y3_GPIO,   .pin_d0 = Y2_GPIO,
+    .pin_vsync = VSYNC_GPIO,
+    .pin_href = HREF_GPIO,
+    .pin_pclk = PCLK_GPIO,
     .xclk_freq_hz = 20000000,
     .ledc_timer = LEDC_TIMER_0,
     .ledc_channel = LEDC_CHANNEL_0,
     .pixel_format = PIXFORMAT_JPEG,
-    .frame_size = FRAMESIZE_VGA,
-    .jpeg_quality = 15,
+    .frame_size = FRAMESIZE_QVGA,
+    .jpeg_quality = 30,
     .fb_count = 2,
     .grab_mode = CAMERA_GRAB_WHEN_EMPTY,
+    .fb_location = CAMERA_FB_IN_DRAM,
   };
 
   esp_err_t err = esp_camera_init(&cfg);
@@ -33,14 +54,14 @@ void shutong_camera_init(void) {
 
   sensor_t *s = esp_camera_sensor_get();
   if (s) {
-    s->set_vflip(s, 0);
-    s->set_hmirror(s, 0);
-    s->set_brightness(s, 0);
-    s->set_contrast(s, 0);
-    s->set_saturation(s, 0);
-    s->set_quality(s, 15);
+    ESP_LOGI(TAG, "Sensor PID=0x%x", s->id.PID);
+    if (s->id.PID == OV3660_PID) {
+      s->set_vflip(s, 1);
+      s->set_brightness(s, 1);
+      s->set_saturation(s, -2);
+    }
   }
-  ESP_LOGI(TAG, "Camera init OK (OV2640, VGA JPEG)");
+  ESP_LOGI(TAG, "Camera init OK (OV3660)");
 }
 
 camera_fb_t *shutong_camera_capture(void) {
