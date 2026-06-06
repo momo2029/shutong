@@ -11,3 +11,4 @@ firmware/managed_components/
 firmware/dependencies.lock
 firmware/sdkconfig
 firmware/sdkconfig.old
+docker/asr/bin/
