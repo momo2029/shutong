@@ -1,14 +1,31 @@
 #include "shutong_mqtt.h"
+#include "hmac_util.h"
+
 #include "esp_log.h"
 #include "cJSON.h"
 #include <string.h>
 #include <stdio.h>
+#include <stdlib.h>
+#include <time.h>
 
 static const char *TAG = "sht-mqtt";
 static esp_mqtt_client_handle_t s_client = NULL;
 static char s_sn[32];
 static mqtt_cmd_cb_t s_cmd_cb = NULL;
 static bool s_connected = false;
+static const time_t MQTT_VALID_UNIX_TIME_SECONDS = 1577836800; // 2020-01-01
+
+#ifndef CONFIG_MQTT_USERNAME
+#define CONFIG_MQTT_USERNAME "st_device"
+#endif
+
+#ifndef CONFIG_MQTT_PASSWORD
+#define CONFIG_MQTT_PASSWORD ""
+#endif
+
+#ifndef CONFIG_MQTT_MASTER_KEY
+#define CONFIG_MQTT_MASTER_KEY ""
+#endif
 
 static char *build_topic(const char *suffix) {
   static char topic[128];
@@ -50,11 +67,60 @@ static void mqtt_event_handler(void *arg, esp_event_base_t base, int32_t id, voi
 }
 
 bool shutong_mqtt_init(const char *sn, const char *broker_url, mqtt_cmd_cb_t cmd_cb) {
-  strncpy(s_sn, sn, sizeof(s_sn) - 1);
+  const char *device_sn = sn ? sn : "";
+
+  strncpy(s_sn, device_sn, sizeof(s_sn) - 1);
+  s_sn[sizeof(s_sn) - 1] = '\0';
   s_cmd_cb = cmd_cb;
+
+  const char *username = CONFIG_MQTT_USERNAME;
+  char dynamic_username[128];
+  char payload[128];
+  char signature[45];
+
+  if (CONFIG_MQTT_MASTER_KEY[0] != '\0') {
+    time_t timestamp = (time_t)(esp_log_timestamp() / 1000);
+    time_t unix_time = time(NULL);
+    if (unix_time > MQTT_VALID_UNIX_TIME_SECONDS) {
+      timestamp = unix_time;
+      ESP_LOGI(TAG, "Using unix timestamp for MQTT auth: %lld", (long long)timestamp);
+    } else {
+      ESP_LOGI(TAG, "Using uptime timestamp for MQTT auth: %lld", (long long)timestamp);
+    }
+
+    int payload_len = snprintf(payload, sizeof(payload), "st_device|%lld|%s",
+                               (long long)timestamp, device_sn);
+    if (payload_len > 0 && payload_len < (int)sizeof(payload)) {
+      hmac_sha256_b64(CONFIG_MQTT_MASTER_KEY, payload, signature, sizeof(signature));
+      if (signature[0] != '\0') {
+        int username_len = snprintf(dynamic_username, sizeof(dynamic_username),
+                                    "st_device:%lld:%s", (long long)timestamp,
+                                    signature);
+        if (username_len > 0 && username_len < (int)sizeof(dynamic_username)) {
+          username = dynamic_username;
+          ESP_LOGI(TAG, "Generated dynamic MQTT username, ts=%lld",
+                   (long long)timestamp);
+        } else {
+          ESP_LOGI(TAG, "Dynamic MQTT username too long, using fallback username");
+        }
+      } else {
+        ESP_LOGI(TAG, "MQTT auth signature failed, using fallback username");
+      }
+    } else {
+      ESP_LOGI(TAG, "MQTT auth payload too long, using fallback username");
+    }
+  } else {
+    ESP_LOGI(TAG, "MQTT master key is empty, using fallback username");
+  }
+
+  char client_id[48];
+  snprintf(client_id, sizeof(client_id), "st_%s", device_sn);
 
   esp_mqtt_client_config_t cfg = {
     .broker.address.uri = broker_url,
+    .credentials.username = username,
+    .credentials.authentication.password = CONFIG_MQTT_PASSWORD,
+    .credentials.client_id = client_id,
     .session.keepalive = 30,
   };
   s_client = esp_mqtt_client_init(&cfg);

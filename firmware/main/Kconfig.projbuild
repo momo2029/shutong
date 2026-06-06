@@ -12,13 +12,33 @@ endchoice
 
 config SHUTONG_SN
     string "设备序列号 (SN)"
-    default "SHT-DEV-001"
+    default "0000000000"
     help
-        设备唯一序列号，出厂烧录。用于MQTT topic和云端绑定。
+        设备唯一序列号，10位数字。建议用Unix时间戳（date +%s），
+        防止重复。烧录前执行: SN=$(date +%s) idf.py build
 
 config MQTT_BROKER_URL
     string "MQTT Broker URL"
     default "mqtt://shutong.3198.net:1883"
+
+config MQTT_USERNAME
+    string "MQTT 用户名"
+    default "st_device"
+    help
+        MQTT认证用户名。设备使用 st_device，服务端使用 sht_server。
+
+config MQTT_PASSWORD
+    string "MQTT 密码"
+    default ""
+    help
+        MQTT认证密码。烧录前通过 idf.py menuconfig 设置，不要提交到代码。
+
+config MQTT_MASTER_KEY
+    string "MQTT 主密钥"
+    default ""
+    help
+        用于生成MQTT username签名的主密钥。开发环境通过 menuconfig 设置，
+        不要提交到代码。
 
 config WIFI_SSID_DEFAULT
     string "默认WiFi SSID"

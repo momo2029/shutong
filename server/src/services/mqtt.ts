@@ -1,4 +1,5 @@
 import mqtt from 'mqtt';
+import { createHmac, timingSafeEqual } from 'crypto';
 import { getEnv } from '../config.js';
 import { db } from '../db/index.js';
 import { devices, notes } from '../db/schema.js';
@@ -9,11 +10,15 @@ import { writeFileSync, mkdirSync, existsSync } from 'fs';
 import { join } from 'path';
 
 let client: mqtt.MqttClient | null = null;
+const verifiedDeviceClientIds = new Set<string>();
 
 // ── Audio chunk buffer: note_id → { total, chunks: Map<seq, base64> } ──
 const audioBuffers = new Map<string, { total: number; chunks: Map<number, string> }>();
 
 const AUDIO_DIR = join(process.cwd(), 'data', 'audio');
+const DEVICE_USERNAME_SKEW_SECONDS = 300;
+const DEVICE_RELATIVE_TIMESTAMP_MAX_SECONDS = 24 * 60 * 60;
+const DEVICE_UNIX_TIMESTAMP_THRESHOLD_SECONDS = 1_000_000_000;
 
 function ensureAudioDir() {
   if (!existsSync(AUDIO_DIR)) {
@@ -67,13 +72,19 @@ export function initMQTT() {
     return;
   }
 
-  client = mqtt.connect(env.MQTT_BROKER, {
+  const opts: mqtt.IClientOptions = {
     clientId: 'sht_svr',
     clean: true,
-  });
+  };
+  if (env.MQTT_USER) {
+    opts.username = env.MQTT_USER;
+    opts.password = env.MQTT_PASSWORD;
+  }
+  client = mqtt.connect(env.MQTT_BROKER, opts);
 
   client.on('connect', () => {
     console.log('[MQTT] Connected to', env.MQTT_BROKER);
+    client!.subscribe('/brokers/+/clients/+/connected');
     client!.subscribe('sht/+/status');
     client!.subscribe('sht/+/audio/chunk');
     client!.subscribe('sht/+/image');
@@ -81,6 +92,12 @@ export function initMQTT() {
 
   client.on('message', (topic, message) => {
     try {
+      if (isClientConnectedTopic(topic)) {
+        const data = JSON.parse(message.toString()) as Record<string, unknown>;
+        handleClientConnected(data);
+        return;
+      }
+
       const sn = topic.split('/')[1];
       const type = topic.split('/').slice(2).join('/');
       const data = JSON.parse(message.toString());
@@ -95,7 +112,165 @@ export function initMQTT() {
   });
 }
 
+function isClientConnectedTopic(topic: string): boolean {
+  const parts = topic.split('/');
+  return parts.length === 6
+    && parts[0] === ''
+    && parts[1] === 'brokers'
+    && parts[3] === 'clients'
+    && parts[5] === 'connected';
+}
+
+async function handleClientConnected(data: Record<string, unknown>) {
+  const clientid = typeof data.clientid === 'string' ? data.clientid : '';
+  const username = typeof data.username === 'string' ? data.username : undefined;
+
+  if (!clientid) {
+    console.log('[MQTT] Client connected event missing clientid');
+    return;
+  }
+
+  if (clientid === 'sht_svr') {
+    return;
+  }
+
+  const result = verifyDeviceUsername(username, clientid);
+  if (result.ok) {
+    verifiedDeviceClientIds.add(clientid);
+    console.log(`[MQTT] Device username verified: ${clientid}, type=${result.type}`);
+    return;
+  }
+
+  verifiedDeviceClientIds.delete(clientid);
+  console.log(`[MQTT] Device username verification failed: ${clientid}, reason=${result.reason}`);
+  const disconnectResult = await disconnectClient(clientid);
+  if (!disconnectResult.ok) {
+    console.warn(`[MQTT] Unauthorized client may remain connected: ${clientid}, reason=${disconnectResult.reason}`);
+  }
+}
+
+function verifyDeviceUsername(username: string | undefined, clientid: string): { ok: true; type: string } | { ok: false; reason: string } {
+  if (!username) {
+    return { ok: false, reason: 'missing_username' };
+  }
+
+  const parts = username.split(':');
+  if (parts.length !== 3) {
+    return { ok: false, reason: 'invalid_username_format' };
+  }
+
+  const [type, timestampText, signature] = parts;
+  if (!type || !timestampText || !signature) {
+    return { ok: false, reason: 'invalid_username_format' };
+  }
+
+  const timestamp = Number(timestampText);
+  if (!Number.isInteger(timestamp)) {
+    return { ok: false, reason: 'invalid_timestamp' };
+  }
+  if (timestamp < 0) {
+    return { ok: false, reason: 'invalid_timestamp' };
+  }
+
+  if (timestamp < DEVICE_UNIX_TIMESTAMP_THRESHOLD_SECONDS) {
+    if (timestamp > DEVICE_RELATIVE_TIMESTAMP_MAX_SECONDS) {
+      return { ok: false, reason: 'relative_timestamp_out_of_range' };
+    }
+  } else {
+    const now = Math.floor(Date.now() / 1000);
+    if (Math.abs(now - timestamp) > DEVICE_USERNAME_SKEW_SECONDS) {
+      return { ok: false, reason: 'timestamp_out_of_range' };
+    }
+  }
+
+  const masterKey = process.env.DEVICE_MASTER_KEY || '';
+  if (!masterKey) {
+    return { ok: false, reason: 'missing_device_master_key' };
+  }
+
+  const sn = clientid.startsWith('st_') ? clientid.substring(3) : clientid;
+  const payload = `${type}|${timestampText}|${sn}`;
+  const expected = createHmac('sha256', masterKey)
+    .update(payload)
+    .digest('base64')
+    .replace(/\+/g, '-')
+    .replace(/\//g, '_')
+    .replace(/=+$/, '');
+  if (!safeEqual(signature, expected)) {
+    return { ok: false, reason: 'signature_mismatch' };
+  }
+
+  return { ok: true, type };
+}
+
+function safeEqual(a: string, b: string): boolean {
+  const aBuffer = Buffer.from(a);
+  const bBuffer = Buffer.from(b);
+  return aBuffer.length === bBuffer.length && timingSafeEqual(aBuffer, bBuffer);
+}
+
+async function disconnectClient(clientid: string): Promise<{ ok: true } | { ok: false; reason: string }> {
+  const env = getEnv();
+  const apiBase = getEmqxApiBase(env.MQTT_BROKER);
+  const url = `${apiBase}/api/v5/clients/${encodeURIComponent(clientid)}`;
+  const apiUser = process.env.EMQX_API_USER || process.env.EMQX_API_KEY || '';
+  const apiPassword = process.env.EMQX_API_PASSWORD || process.env.EMQX_API_SECRET || '';
+
+  if (!apiUser || !apiPassword) {
+    console.warn('[MQTT] Cannot disconnect client via EMQX API: missing EMQX_API_USER/PASSWORD or EMQX_API_KEY/SECRET');
+    return { ok: false, reason: 'missing_emqx_api_credentials' };
+  }
+
+  const headers: Record<string, string> = {
+    Authorization: `Basic ${Buffer.from(`${apiUser}:${apiPassword}`).toString('base64')}`,
+  };
+
+  try {
+    const response = await fetch(url, { method: 'DELETE', headers });
+    if (response.ok || response.status === 404) {
+      console.log(`[MQTT] Disconnected client via EMQX API: ${clientid}, status=${response.status}`);
+      return { ok: true };
+    }
+
+    const body = await response.text().catch(() => '');
+    console.warn(
+      `[MQTT] Failed to disconnect client via EMQX API: ${clientid}, status=${response.status}, statusText=${response.statusText}, body=${body}`,
+    );
+    return { ok: false, reason: `emqx_api_status_${response.status}` };
+  } catch (err) {
+    console.error('[MQTT] EMQX API disconnect error:', err instanceof Error ? err.message : err);
+    return { ok: false, reason: 'emqx_api_request_failed' };
+  }
+}
+
+function getEmqxApiBase(mqttBroker: string): string {
+  if (process.env.EMQX_API_URL) {
+    return process.env.EMQX_API_URL.replace(/\/$/, '');
+  }
+
+  try {
+    const url = new URL(mqttBroker);
+    const isTls = url.protocol === 'mqtts:';
+    url.protocol = isTls ? 'https:' : 'http:';
+    url.port = process.env.EMQX_API_PORT || (isTls ? '8083' : '18083');
+    url.username = '';
+    url.password = '';
+    url.pathname = '';
+    url.search = '';
+    url.hash = '';
+    return url.toString().replace(/\/$/, '');
+  } catch {
+    return 'http://127.0.0.1:18083';
+  }
+}
+
 async function handleMessage(sn: string, type: string, data: Record<string, unknown>) {
+  const expectedClientid = `st_${sn}`;
+  if (!verifiedDeviceClientIds.has(expectedClientid)) {
+    console.log(`[MQTT] Unauthorized message ignored: sn=${sn}, expectedClientid=${expectedClientid}, type=${type}`);
+    return;
+  }
+
   const device = db.select().from(devices).where(eq(devices.sn, sn)).get();
   if (!device) {
     console.log('[MQTT] Unknown device:', sn);
