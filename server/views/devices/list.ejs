@@ -2,6 +2,37 @@
   <h2>我的设备</h2>
   <a href="/devices/bind" class="btn btn-primary">绑定新设备</a>
 </div>
+<% if (devices.length === 0) { %>
 <div class="card mt-2">
   <p class="text-muted text-center">暂无设备，点击上方按钮绑定</p>
 </div>
+<% } else { %>
+<div class="card mt-2">
+  <table>
+    <thead>
+      <tr>
+        <th>设备名称</th>
+        <th>序列号</th>
+        <th>类型</th>
+        <th>状态</th>
+        <th>固件版本</th>
+        <th>操作</th>
+      </tr>
+    </thead>
+    <tbody>
+      <% devices.forEach(device => { %>
+      <tr>
+        <td><%= device.name %></td>
+        <td><%= device.sn %></td>
+        <td><%= device.type === 'flagship' ? '旗舰版' : '标准版' %></td>
+        <td><%= device.online ? '在线' : '离线' %></td>
+        <td><%= device.firmwareVersion %></td>
+        <td>
+          <a href="/devices/<%= device.id %>">详情</a>
+        </td>
+      </tr>
+      <% }) %>
+    </tbody>
+  </table>
+</div>
+<% } %>

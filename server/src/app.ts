@@ -71,7 +71,19 @@ app.get('/auth/logout', (c) => {
   c.header('Set-Cookie', 'token=; HttpOnly; Path=/; Max-Age=0');
   return c.redirect('/auth/login');
 });
-app.get('/devices', async (c) => c.var.render('devices/list.ejs', { title: '我的设备' }));
+app.get('/devices', async (c) => {
+  const cookie = c.req.header('cookie') || '';
+  const match = cookie.match(/token=([^;]+)/);
+  let deviceList: any[] = [];
+  if (match) {
+    try {
+      const { verifyJWT } = await import('./utils/jwt.js');
+      const payload = await verifyJWT(match[1]);
+      deviceList = db.select().from(devices).where(eq(devices.userId, payload.sub as string)).all();
+    } catch (e) { /* fall through */ }
+  }
+  return c.var.render('devices/list.ejs', { title: '我的设备', devices: deviceList });
+});
 app.get('/devices/bind', async (c) => {
   const cookie = c.req.header('cookie') || '';
   if (!cookie.match(/token=([^;]+)/)) return c.redirect('/auth/login');
