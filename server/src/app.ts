@@ -2,7 +2,7 @@ import { Hono } from 'hono';
 import { serveStatic } from '@hono/node-server/serve-static';
 import { getEnv } from './config.js';
 import { db } from './db/index.js';
-import { users, courses } from './db/schema.js';
+import { users, courses, devices } from './db/schema.js';
 import { eq, and } from 'drizzle-orm';
 
 // Custom context variables
