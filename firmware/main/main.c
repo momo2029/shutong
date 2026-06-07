@@ -14,11 +14,13 @@
 #include "shutong_wifi.h"
 #include "shutong_mqtt.h"
 #include "shutong_audio.h"
+#include "shutong_speaker.h"
 #include "shutong_proto.h"
 
 #ifdef CONFIG_SHUTONG_FLAGSHIP
 #include "shutong_camera.h"
 #endif
+#include "shutong_sdcard.h"
 
 static const char *TAG = "sht-main";
 
@@ -128,8 +130,12 @@ static void button_task(void *arg) {
                    (unsigned)(esp_random() & 0xFFFF));
           s_chunk_seq = 0;
           s_chunk_total = 10;
+          shutong_speaker_play_short_prompt();
           ESP_LOGI(TAG, "Recording started: %s", s_note_id);
         } else {
+          shutong_speaker_play_short_prompt();
+          vTaskDelay(pdMS_TO_TICKS(200));
+          shutong_speaker_play_short_prompt();
           ESP_LOGI(TAG, "Recording stopped");
           led_set(0);
         }
@@ -180,11 +186,14 @@ static void on_mqtt_cmd(const char *type, const char *ref_msg_id) {
 }
 
 // ─── OTA ────────────────────────────────────────────────────
-static void ota_task(void *arg) {
-  // TODO: Poll MQTT OTA topic, download firmware, apply update
-  // esp_https_ota(&cfg);
-  vTaskDelete(NULL);
-}
+// TODO: Implement OTA download and apply
+// static void ota_task(void *arg) {
+//   esp_https_ota_config_t ota_config = {
+//     .http_config = ESP_HTTP_CLIENT_CONFIG_DEFAULT(),
+//   };
+//   esp_https_ota(&ota_config);
+//   vTaskDelete(NULL);
+// }
 
 // ─── HTTP provisioning server ──────────────────────────────
 static esp_err_t prov_handler(httpd_req_t *req) {
@@ -259,6 +268,42 @@ static void start_prov_server(void) {
   ESP_LOGI(TAG, "Provisioning HTTP server started on port 80");
 }
 
+// ─── Camera capture ─────────────────────────────────────────
+#define CAPTURE_INTERVAL_MS 5000  // 5 seconds between frames
+
+static void capture_task(void *arg) {
+  int frame_seq = 0;
+  while (1) {
+    if (s_recording && shutong_sdcard_mounted()) {
+      camera_fb_t *fb = shutong_camera_capture();
+      if (fb) {
+        // Build path: /sdcard/rec/{note_id}/frame_{seq}.jpg
+        char path[128];
+        char dir[96];
+        snprintf(dir, sizeof(dir), SD_MOUNT_POINT "/rec/%s", s_note_id);
+        mkdir(dir, 0777);
+        snprintf(path, sizeof(path), SD_MOUNT_POINT "/rec/%s/frame_%d.jpg",
+                 s_note_id, frame_seq);
+
+        FILE *f = fopen(path, "wb");
+        if (f) {
+          fwrite(fb->buf, 1, fb->len, f);
+          fclose(f);
+          ESP_LOGI(TAG, "Frame %d saved: %s (%u bytes)", frame_seq, path, fb->len);
+          frame_seq++;
+        }
+        shutong_camera_return(fb);
+
+        // Shutter click sound (non-blocking — runs in speaker task context)
+        shutong_speaker_play_shutter();
+      } else {
+        ESP_LOGW(TAG, "Capture failed");
+      }
+    }
+    vTaskDelay(pdMS_TO_TICKS(CAPTURE_INTERVAL_MS));
+  }
+}
+
 // ─── App entry ──────────────────────────────────────────────
 void app_main(void) {
   ESP_LOGI(TAG, "书童 %s v%s SN=%s",
@@ -287,15 +332,36 @@ void app_main(void) {
   // Audio
   shutong_audio_init();
 
+  // Speaker & boot sound
+  shutong_speaker_init();
+  shutong_speaker_play_boot();
+
+  // SD card (non-fatal if absent)
+  esp_err_t sd_ret = shutong_sdcard_init();
+  if (sd_ret != ESP_OK) {
+    ESP_LOGW(TAG, "SD card not available, recording to memory only");
+  }
+
   // WiFi
   shutong_wifi_init();
 
+  // Play status sound based on connection result
   if (shutong_wifi_is_connected()) {
-    // Camera (flagship only)
+    shutong_speaker_play_wifi_connected();
+  } else {
+    shutong_speaker_play_ap_mode();
+  }
+
+  // Camera (always init if flagship — capture works without WiFi)
 #ifdef CONFIG_SHUTONG_FLAGSHIP
-    shutong_camera_init();
-    shutong_camera_stream_start();
+  shutong_camera_init();
+  shutong_camera_stream_start();
 #endif
+
+  // Start capture task (5s periodic frame grab to SD card)
+  xTaskCreate(capture_task, "capture", 8192, NULL, 2, NULL);
+
+  if (shutong_wifi_is_connected()) {
 
     // MQTT
     shutong_mqtt_init(CONFIG_SHUTONG_SN, CONFIG_MQTT_BROKER_URL, on_mqtt_cmd);

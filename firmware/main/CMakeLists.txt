@@ -14,8 +14,10 @@ idf_component_register(
         shutong_wifi
         shutong_mqtt
         shutong_audio
+        shutong_speaker
         shutong_proto
         shutong_camera
+        shutong_sdcard
 )
 
 if(CONFIG_SHUTONG_FLAGSHIP)

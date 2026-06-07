@@ -91,7 +91,7 @@ Dual backend: Qiniu Kodo when `QINIU_ACCESS_KEY` is set, otherwise local `data/f
 
 ### MQTT Integration
 
-Topic structure: `sht/{SN}/{type}`. Server subscribes to wildcards `sht/+/status`, `sht/+/audio/chunk`, `sht/+/image`. Publishes commands to `sht/{SN}/cmd` (QoS 1). Device SN extracted from topic path.
+Topic structure: `sht/{SN}/{type}`. Server subscribes to wildcards `sht/+/status`, `sht/+/audio/chunk`, `sht/+/image`. Publishes commands to `sht/{SN}/cmd` (QoS 1). Device SN extracted from topic path. Additional topics: `sht/{SN}/cmd/ack` (device→server), `sht/{SN}/ota` (server→device).
 
 ## Architecture — Firmware
 
@@ -106,16 +106,18 @@ Single codebase, dual variant via Kconfig. `main.c` uses `#ifdef CONFIG_SHUTONG_
 - `shutong_audio`: I2S INMP441 at 16kHz mono, 32→16 bit conversion, circular buffer (~40s), VAD threshold 500.
 - `shutong_proto`: JSON builders for all MQTT message types. Audio data is base64-encoded PCM inline in JSON.
 - `shutong_camera` (flagship only): OV2640 VGA JPEG, quality 15, 20MHz XCLK.
+- `shutong_speaker`: MAX98357 I2S speaker amp for audio playback.
 
 ### Key GPIO Pins
 
 | Function | Pin | Shared? |
 |---|---|---|
 | Record button | GPIO 0 (BOOT) | Both |
-| Status LED | GPIO 2 | Both |
+| Status LED | GPIO 3 | Both |
 | I2S SCK | GPIO 14 | Both |
 | I2S WS | GPIO 21 | Both |
 | I2S SD (INMP441) | GPIO 33 | Both |
+| IR LED (night vision) | GPIO 47 | Both |
 | Camera button | GPIO 1 | Flagship only |
 | Camera XCLK | GPIO 15 | Flagship only |
 | Camera D0-D7 | 11,9,8,10,12,18,17,16 | Flagship only |
@@ -124,7 +126,7 @@ I2S pins (14, 21, 33) are chosen to avoid camera pins on ESP32-S3.
 
 ### OTA
 
-Partition table has `factory` + `ota_0` + `ota_1`. OTA download skeleton exists in `ota_task` but is not wired — TODO.
+Partition table: `factory` (0x10000–0x310000, 3MB) + `ota_0` (3MB) + `ota_1` (3MB). OTA download skeleton exists in `ota_task` but is not wired — TODO.
 
 ## Deployment
 

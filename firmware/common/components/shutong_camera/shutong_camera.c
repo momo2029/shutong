@@ -39,11 +39,11 @@ void shutong_camera_init(void) {
     .ledc_timer = LEDC_TIMER_0,
     .ledc_channel = LEDC_CHANNEL_0,
     .pixel_format = PIXFORMAT_JPEG,
-    .frame_size = FRAMESIZE_QVGA,
-    .jpeg_quality = 30,
+    .frame_size = FRAMESIZE_SVGA,       // 800x600 — good for blackboard OCR
+    .jpeg_quality = 10,                  // high quality
     .fb_count = 2,
-    .grab_mode = CAMERA_GRAB_WHEN_EMPTY,
-    .fb_location = CAMERA_FB_IN_DRAM,
+    .grab_mode = CAMERA_GRAB_LATEST,     // skip stale frames
+    .fb_location = CAMERA_FB_IN_PSRAM,   // PSRAM for large frame buffers (8MB PSRAM needs config)
   };
 
   esp_err_t err = esp_camera_init(&cfg);
@@ -60,10 +60,18 @@ void shutong_camera_init(void) {
       s->set_brightness(s, 1);
       s->set_saturation(s, -2);
     }
+    // Exposure tuning for classroom blackboard:
+    // Blackboard tends to overexpose → lower compensation
+    s->set_ae_level(s, -2);         // -2 EV
+    s->set_awb_gain(s, 1);          // keep auto white balance
   }
-  ESP_LOGI(TAG, "Camera init OK (OV3660)");
+  ESP_LOGI(TAG, "Camera init OK (OV3660 UXGA)");
 }
 
 camera_fb_t *shutong_camera_capture(void) {
   return esp_camera_fb_get();
+}
+
+void shutong_camera_return(camera_fb_t *fb) {
+  if (fb) esp_camera_fb_return(fb);
 }

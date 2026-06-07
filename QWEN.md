@@ -9,22 +9,22 @@
 ```
 firmware/          ESP32 固件 (ESP-IDF)
   main/            主程序入口、FreeRTOS 任务
-  common/components/  共享组件: wifi, mqtt, audio, camera, proto
+  common/components/  共享组件: wifi, mqtt, audio, speaker, camera, proto
 server/            Node.js 后端 (Hono + TypeScript)
-  src/routes/      API 路由
-  src/services/    业务服务 (MQTT, ASR, OCR, LLM, OTA, 存储)
+  src/routes/      10 路由: auth, devices, courses, notes, upload, ai, export, admin, ota, knowledge
+  src/services/    业务服务 (MQTT, ASR, OCR, LLM, queue, OTA, 存储)
   src/db/          数据库 (Drizzle ORM + SQLite)
   views/           EJS 页面模板
-docker/            Docker Compose (app + EMQX + ASR)
+docker/            Docker Compose (app + asr + EMQX)
 docs/              文档 (API, MQTT 协议, 硬件烧录)
 ```
 
 ## 硬件版本
 
-| 版本 | 芯片 | 摄像头 | 构建目标 |
-|---|---|---|---|
-| 标准版 | ESP32-WROOM | 无 | `idf.py set-target esp32` |
-| 旗舰版 | ESP32-S3 | OV2640 | `idf.py set-target esp32s3` |
+| 版本 | 芯片 | 摄像头 | 其他外设 | 构建目标 |
+|---|---|---|---|---|
+| 标准版 | ESP32-WROOM | 无 | INMP441 + MAX98357 | `idf.py set-target esp32` |
+| 旗舰版 | ESP32-S3 | OV2640 | INMP441 + MAX98357 + IR LED | `idf.py set-target esp32s3` |
 
 ## ASR 服务
 
@@ -88,7 +88,7 @@ docker compose up -d   # 启动 app + EMQX
 
 - Broker: EMQX, 端口 1883 (TCP) / 8083 (WebSocket)
 - ClientID: `sht_<SN>` (设备端)
-- 音频: Opus 编码, Base64 传输, 按 note_id + seq 分段上传
+- 音频: PCM 16-bit 采样, Base64 传输, 按 chunk_seq 分段上传
 - 图片: JPEG, Base64, 仅旗舰版
 - 指令: start_record / stop_record / ping / reboot
 - 详细协议见 `docs/mqtt-protocol.md`
@@ -120,7 +120,8 @@ docker compose up -d   # 启动 app + EMQX
 
 ## 开发约定
 
-- 固件: FreeRTOS 多任务架构，组件化设计，Kconfig 配置硬件参数
+- 固件: FreeRTOS 多任务架构（heartbeat/record/camera/MQTT handler），组件化设计，Kconfig 配置硬件参数
+- GPIO: Record=GPIO0, LED=GPIO3, IR_LED=GPIO47, I2S(SCK=14, WS=21, SD=33), Camera XCLK=15
 - 服务端: ES modules (`"type": "module"`)，路由文件默认导出 Hono 实例
 - 数据库: Drizzle ORM，schema 定义在 `src/db/schema.ts`，迁移通过 `drizzle-kit generate`
 - 页面: EJS 模板渲染，通过 `c.var.render()` 传递数据
