@@ -1,23 +1,23 @@
 idf_component_register(
-    SRCS "main.c"
+    SRCS "main.cpp"
+         "boards/shutong-s3/button.cc"
     INCLUDE_DIRS "."
+                 "boards/shutong-s3"
     REQUIRES
         nvs_flash
-        esp_wifi
-        esp_event
-        esp_http_server
-        esp_https_ota
-        app_update
         driver
         json
         mbedtls
-        shutong_wifi
         shutong_mqtt
-        shutong_audio
-        shutong_speaker
         shutong_proto
         shutong_camera
         shutong_sdcard
+        shutong_audio
+        shutong_speaker
+        78__esp-wifi-connect
+        espressif__button
+        esp_http_server
+        esp_timer
 )
 
 if(CONFIG_SHUTONG_FLAGSHIP)
