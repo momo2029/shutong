@@ -4,6 +4,7 @@
 #include "esp_event.h"
 #include "nvs_flash.h"
 #include "freertos/event_groups.h"
+#include "lwip/sockets.h"
 #include <string.h>
 
 static const char *TAG = "sht-wifi";
@@ -11,6 +12,7 @@ static EventGroupHandle_t s_evt;
 static bool s_connected = false;
 static char s_ip[16] = {0};
 static int s_rssi = 0;
+static int s_dns_fd = -1;
 
 // Pending connect pattern (producer-consumer, avoids event loop deadlock)
 static volatile bool s_connect_pending = false;
@@ -132,8 +134,56 @@ void shutong_wifi_process_pending(void) {
   }
 }
 
+// DNS server task for captive portal
+static void dns_server_task(void *arg) {
+  uint32_t gateway_ip = (uint32_t)(uintptr_t)arg;
+  char buf[512];
+
+  s_dns_fd = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+  if (s_dns_fd < 0) {
+    ESP_LOGE(TAG, "DNS socket failed");
+    vTaskDelete(NULL);
+    return;
+  }
+
+  struct sockaddr_in srv = {0};
+  srv.sin_family = AF_INET;
+  srv.sin_port = htons(53);
+  srv.sin_addr.s_addr = htonl(INADDR_ANY);
+
+  if (bind(s_dns_fd, (struct sockaddr *)&srv, sizeof(srv)) < 0) {
+    ESP_LOGE(TAG, "DNS bind failed");
+    close(s_dns_fd);
+    s_dns_fd = -1;
+    vTaskDelete(NULL);
+    return;
+  }
+
+  ESP_LOGI(TAG, "DNS server started");
+
+  while (1) {
+    struct sockaddr_in client;
+    socklen_t len = sizeof(client);
+    int n = recvfrom(s_dns_fd, buf, sizeof(buf), 0, (struct sockaddr *)&client, &len);
+    if (n < 12) continue;
+
+    // Build DNS response: all queries return gateway IP
+    buf[2] |= 0x80; // Response flag
+    buf[3] |= 0x80; // Recursion available
+    buf[7] = 1;     // 1 answer
+
+    // Answer section
+    memcpy(&buf[n], "\xc0\x0c\x00\x01\x00\x01\x00\x00\x00\x1c\x00\x04", 12);
+    n += 12;
+    memcpy(&buf[n], &gateway_ip, 4);
+    n += 4;
+
+    sendto(s_dns_fd, buf, n, 0, (struct sockaddr *)&client, len);
+  }
+}
+
 void shutong_wifi_start_ap(void) {
-  esp_netif_create_default_wifi_ap();
+  esp_netif_t *ap_netif = esp_netif_create_default_wifi_ap();
   wifi_config_t cfg = {
     .ap = {
       .ssid = "shutong-Setup",
@@ -148,6 +198,12 @@ void shutong_wifi_start_ap(void) {
   esp_wifi_set_config(WIFI_IF_AP, &cfg);
   esp_wifi_start();
   ESP_LOGI(TAG, "AP: shutong-Setup (open)");
+
+  // Start DNS server for captive portal (192.168.4.1)
+  esp_netif_ip_info_t ip_info;
+  esp_netif_get_ip_info(ap_netif, &ip_info);
+  uint32_t gw = ip_info.gw.addr; // Gateway IP (192.168.4.1 in network byte order)
+  xTaskCreate(dns_server_task, "dns", 4096, (void *)(uintptr_t)gw, 5, NULL);
 }
 
 bool shutong_wifi_is_connected(void) { return s_connected; }

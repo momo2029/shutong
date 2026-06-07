@@ -3,9 +3,10 @@ FROM node:22
 WORKDIR /app
 
 COPY package.json package-lock.json* ./
-COPY . .
+RUN npm install
 
-RUN npm install && npm run build && npm prune --omit=dev
+COPY . .
+RUN npm run build && npm prune --omit=dev
 
 RUN mkdir -p /app/data
 

@@ -39,11 +39,11 @@ void shutong_camera_init(void) {
     .ledc_timer = LEDC_TIMER_0,
     .ledc_channel = LEDC_CHANNEL_0,
     .pixel_format = PIXFORMAT_JPEG,
-    .frame_size = FRAMESIZE_SVGA,       // 800x600 — good for blackboard OCR
-    .jpeg_quality = 10,                  // high quality
-    .fb_count = 2,
-    .grab_mode = CAMERA_GRAB_LATEST,     // skip stale frames
-    .fb_location = CAMERA_FB_IN_PSRAM,   // PSRAM for large frame buffers (8MB PSRAM needs config)
+    .frame_size = FRAMESIZE_UXGA,       // 1600x1200, full OV3660 resolution
+    .jpeg_quality = 12,
+    .fb_count = 1,
+    .grab_mode = CAMERA_GRAB_LATEST,
+    .fb_location = CAMERA_FB_IN_PSRAM,   // PSRAM has 8MB, plenty for UXGA (8MB PSRAM needs config)
   };
 
   esp_err_t err = esp_camera_init(&cfg);

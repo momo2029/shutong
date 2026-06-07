@@ -1,7 +1,23 @@
 {
   "permissions": {
     "allow": [
-      "Bash(git init)"
+      "Bash(git init)",
+      "Bash(python3 *)",
+      "Bash(tar *)",
+      "Bash(cmake *)",
+      "Bash(file *)",
+      "Bash(which *)",
+      "Bash(docker *)",
+      "Bash(zig *)",
+      "Bash(nm *)",
+      "Bash(hexdump *)",
+      "Bash(sort)   -lpthread *)",
+      "Bash(cp *)",
+      "Agent(Explore)",
+      "Bash(git rm *)",
+      "Bash(npm run *)",
+      "Bash(strings)"
     ]
-  }
+  },
+  "$version": 4
 }

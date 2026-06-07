@@ -24,8 +24,8 @@ main(_) ->
     P2 = base64:decode(\"$B64_PASS2\"),
     R1 = emqx_authn_mnesia:put_user(#{username => <<\"sht_server\">>, password => P1}),
     io:format(\"User sht_server: ~p~n\", [R1]),
-    R2 = emqx_authn_mnesia:put_user(#{username => <<\"sht_device\">>, password => P2}),
-    io:format(\"User sht_device: ~p~n\", [R2]),
+    R2 = emqx_authn_mnesia:put_user(#{username => <<\"st_device\">>, password => P2}),
+    io:format(\"User st_device: ~p~n\", [R2]),
     init:stop().
 ERLEOF"
 

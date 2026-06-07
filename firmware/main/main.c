@@ -275,6 +275,7 @@ static void capture_task(void *arg) {
   int frame_seq = 0;
   while (1) {
     if (s_recording && shutong_sdcard_mounted()) {
+#ifdef CONFIG_SHUTONG_FLAGSHIP
       camera_fb_t *fb = shutong_camera_capture();
       if (fb) {
         // Build path: /sdcard/rec/{note_id}/frame_{seq}.jpg
@@ -294,11 +295,15 @@ static void capture_task(void *arg) {
         }
         shutong_camera_return(fb);
 
-        // Shutter click sound (non-blocking — runs in speaker task context)
+        // Shutter click sound
         shutong_speaker_play_shutter();
       } else {
         ESP_LOGW(TAG, "Capture failed");
       }
+#else
+      // Standard edition: no camera, just log
+      ESP_LOGD(TAG, "Standard edition: no camera capture");
+#endif
     }
     vTaskDelay(pdMS_TO_TICKS(CAPTURE_INTERVAL_MS));
   }
@@ -352,16 +357,20 @@ void app_main(void) {
     shutong_speaker_play_ap_mode();
   }
 
-  // Camera (always init if flagship — capture works without WiFi)
+  // Camera init (always — capture_task works without WiFi)
 #ifdef CONFIG_SHUTONG_FLAGSHIP
   shutong_camera_init();
-  shutong_camera_stream_start();
 #endif
 
   // Start capture task (5s periodic frame grab to SD card)
   xTaskCreate(capture_task, "capture", 8192, NULL, 2, NULL);
 
   if (shutong_wifi_is_connected()) {
+
+    // Camera stream server (only when WiFi, conflicts with provisioning on port 80)
+#ifdef CONFIG_SHUTONG_FLAGSHIP
+    shutong_camera_stream_start();
+#endif
 
     // MQTT
     shutong_mqtt_init(CONFIG_SHUTONG_SN, CONFIG_MQTT_BROKER_URL, on_mqtt_cmd);
@@ -382,7 +391,7 @@ void app_main(void) {
 
     ESP_LOGI(TAG, "Online — press BOOT button to start/stop recording");
   } else {
-    // AP mode: start provisioning web server
+    // AP mode: start provisioning web server (port 80 free, no camera stream)
     start_prov_server();
   }
 

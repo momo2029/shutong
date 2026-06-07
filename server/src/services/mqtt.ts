@@ -138,6 +138,14 @@ async function handleClientConnected(data: Record<string, unknown>) {
   if (result.ok) {
     verifiedDeviceClientIds.add(clientid);
     console.log(`[MQTT] Device username verified: ${clientid}, type=${result.type}`);
+
+    // If using default credentials, send personalized credentials
+    if (result.type === 'fixed' && username === 'st_device') {
+      const sn = clientid.startsWith('st_') ? clientid.substring(3) : clientid;
+      sendPersonalizedCredentials(sn).catch(err => {
+        console.error(`[MQTT] Failed to send credentials to ${sn}:`, err);
+      });
+    }
     return;
   }
 
@@ -154,6 +162,12 @@ function verifyDeviceUsername(username: string | undefined, clientid: string): {
     return { ok: false, reason: 'missing_username' };
   }
 
+  // Support fixed username format: st_device or st_{SN}
+  if (username === 'st_device' || username.startsWith('st_')) {
+    return { ok: true, type: 'fixed' };
+  }
+
+  // Dynamic authentication format: type:timestamp:signature
   const parts = username.split(':');
   if (parts.length !== 3) {
     return { ok: false, reason: 'invalid_username_format' };
@@ -365,6 +379,79 @@ async function handleMessage(sn: string, type: string, data: Record<string, unkn
       break;
     }
   }
+}
+
+async function createEmqxUser(username: string, password: string): Promise<boolean> {
+  const env = getEnv();
+  const apiBase = getEmqxApiBase(env.MQTT_BROKER);
+  const url = `${apiBase}/api/v5/authentication/password_based:built_in_database/users`;
+  const apiUser = process.env.EMQX_API_USER || process.env.EMQX_API_KEY || '';
+  const apiPassword = process.env.EMQX_API_PASSWORD || process.env.EMQX_API_SECRET || '';
+
+  if (!apiUser || !apiPassword) {
+    console.warn('[MQTT] Cannot create EMQX user: missing API credentials');
+    return false;
+  }
+
+  const headers: Record<string, string> = {
+    'Authorization': `Basic ${Buffer.from(`${apiUser}:${apiPassword}`).toString('base64')}`,
+    'Content-Type': 'application/json',
+  };
+
+  try {
+    const response = await fetch(url, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({ user_id: username, password }),
+    });
+
+    if (response.ok || response.status === 409) {
+      console.log(`[MQTT] EMQX user created or already exists: ${username}`);
+      return true;
+    }
+
+    const body = await response.text().catch(() => '');
+    console.warn(`[MQTT] Failed to create EMQX user: ${username}, status=${response.status}, body=${body}`);
+    return false;
+  } catch (err) {
+    console.error('[MQTT] EMQX API create user error:', err instanceof Error ? err.message : err);
+    return false;
+  }
+}
+
+async function sendPersonalizedCredentials(sn: string) {
+  if (!client) throw new Error('MQTT not connected');
+
+  const masterKey = process.env.DEVICE_MASTER_KEY;
+  if (!masterKey) {
+    console.error('[MQTT] DEVICE_MASTER_KEY not set, cannot issue credentials');
+    return;
+  }
+
+  const username = `st_${sn}`;
+  const password = createHmac('sha256', masterKey)
+    .update(sn)
+    .digest('base64')
+    .replace(/[^a-zA-Z0-9]/g, '')
+    .substring(0, 32);
+
+  // Create user in EMQX first
+  const created = await createEmqxUser(username, password);
+  if (!created) {
+    console.error(`[MQTT] Failed to create EMQX user for ${sn}`);
+    return;
+  }
+
+  const msg = {
+    msg_id: uuid(),
+    ts: Math.floor(Date.now() / 1000),
+    type: 'update_credentials',
+    username,
+    password,
+  };
+
+  client.publish(`sht/${sn}/cmd`, JSON.stringify(msg), { qos: 1 });
+  console.log(`[MQTT] Sent personalized credentials to device ${sn}`);
 }
 
 export async function publishCommand(sn: string, cmd: string, params: Record<string, unknown>) {

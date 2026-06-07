@@ -2,6 +2,7 @@
 #include "hmac_util.h"
 
 #include "esp_log.h"
+#include "nvs_flash.h"
 #include "cJSON.h"
 #include <string.h>
 #include <stdio.h>
@@ -20,7 +21,7 @@ static const time_t MQTT_VALID_UNIX_TIME_SECONDS = 1577836800; // 2020-01-01
 #endif
 
 #ifndef CONFIG_MQTT_PASSWORD
-#define CONFIG_MQTT_PASSWORD ""
+#define CONFIG_MQTT_PASSWORD "shutong-mqtt-2024"
 #endif
 
 #ifndef CONFIG_MQTT_MASTER_KEY
@@ -51,14 +52,38 @@ static void mqtt_event_handler(void *arg, esp_event_base_t base, int32_t id, voi
       strncpy(payload, ev->data, ev->data_len);
       payload[ev->data_len] = '\0';
       cJSON *json = cJSON_Parse(payload);
-      if (json && s_cmd_cb) {
+      if (json) {
         cJSON *type = cJSON_GetObjectItem(json, "type");
         if (type && type->valuestring) {
-          cJSON *id = cJSON_GetObjectItem(json, "msg_id");
-          s_cmd_cb(type->valuestring, id ? id->valuestring : "");
+          // Handle update_credentials command
+          if (strcmp(type->valuestring, "update_credentials") == 0) {
+            cJSON *username_obj = cJSON_GetObjectItem(json, "username");
+            cJSON *password_obj = cJSON_GetObjectItem(json, "password");
+            if (username_obj && username_obj->valuestring) {
+              nvs_handle_t nvs_h;
+              if (nvs_open("mqtt", NVS_READWRITE, &nvs_h) == ESP_OK) {
+                nvs_set_str(nvs_h, "username", username_obj->valuestring);
+                if (password_obj && password_obj->valuestring) {
+                  nvs_set_str(nvs_h, "password", password_obj->valuestring);
+                } else {
+                  nvs_set_str(nvs_h, "password", "");
+                }
+                nvs_commit(nvs_h);
+                nvs_close(nvs_h);
+                ESP_LOGI(TAG, "MQTT credentials updated, restarting...");
+                vTaskDelay(pdMS_TO_TICKS(1000));
+                esp_restart();
+              }
+            }
+          }
+          // Forward to callback for other commands
+          if (s_cmd_cb) {
+            cJSON *id = cJSON_GetObjectItem(json, "msg_id");
+            s_cmd_cb(type->valuestring, id ? id->valuestring : "");
+          }
         }
+        cJSON_Delete(json);
       }
-      if (json) cJSON_Delete(json);
       free(payload);
       break;
     }
@@ -73,7 +98,26 @@ bool shutong_mqtt_init(const char *sn, const char *broker_url, mqtt_cmd_cb_t cmd
   s_sn[sizeof(s_sn) - 1] = '\0';
   s_cmd_cb = cmd_cb;
 
-  const char *username = CONFIG_MQTT_USERNAME;
+  // Try to read credentials from NVS first
+  static char nvs_username[64] = {0};
+  static char nvs_password[64] = {0};
+  bool use_nvs_creds = false;
+
+  nvs_handle_t nvs_h;
+  if (nvs_open("mqtt", NVS_READONLY, &nvs_h) == ESP_OK) {
+    size_t len = sizeof(nvs_username);
+    if (nvs_get_str(nvs_h, "username", nvs_username, &len) == ESP_OK && nvs_username[0]) {
+      len = sizeof(nvs_password);
+      nvs_get_str(nvs_h, "password", nvs_password, &len);
+      use_nvs_creds = true;
+      ESP_LOGI(TAG, "Using MQTT credentials from NVS");
+    }
+    nvs_close(nvs_h);
+  }
+
+  const char *username = use_nvs_creds ? nvs_username : CONFIG_MQTT_USERNAME;
+  const char *mqtt_password = use_nvs_creds ? nvs_password : CONFIG_MQTT_PASSWORD;
+
   char dynamic_username[128];
   char payload[128];
   char signature[45];
@@ -119,7 +163,7 @@ bool shutong_mqtt_init(const char *sn, const char *broker_url, mqtt_cmd_cb_t cmd
   esp_mqtt_client_config_t cfg = {
     .broker.address.uri = broker_url,
     .credentials.username = username,
-    .credentials.authentication.password = CONFIG_MQTT_PASSWORD,
+    .credentials.authentication.password = mqtt_password,
     .credentials.client_id = client_id,
     .session.keepalive = 30,
   };
