@@ -183,7 +183,10 @@ static void dns_server_task(void *arg) {
 }
 
 void shutong_wifi_start_ap(void) {
-  esp_netif_t *ap_netif = esp_netif_create_default_wifi_ap();
+  // AP+STA dual mode so scan works during provisioning
+  esp_netif_create_default_wifi_ap();
+  esp_netif_create_default_wifi_sta();
+
   wifi_config_t cfg = {
     .ap = {
       .ssid = "shutong-Setup",
@@ -194,16 +197,20 @@ void shutong_wifi_start_ap(void) {
       .max_connection = 4,
     },
   };
-  esp_wifi_set_mode(WIFI_MODE_AP);
+  esp_wifi_set_mode(WIFI_MODE_APSTA);
   esp_wifi_set_config(WIFI_IF_AP, &cfg);
   esp_wifi_start();
   ESP_LOGI(TAG, "AP: shutong-Setup (open)");
 
   // Start DNS server for captive portal (192.168.4.1)
-  esp_netif_ip_info_t ip_info;
-  esp_netif_get_ip_info(ap_netif, &ip_info);
-  uint32_t gw = ip_info.gw.addr; // Gateway IP (192.168.4.1 in network byte order)
-  xTaskCreate(dns_server_task, "dns", 4096, (void *)(uintptr_t)gw, 5, NULL);
+  esp_netif_t *ap_nf = esp_netif_get_handle_from_ifkey("WIFI_AP_DEF");
+  uint32_t gw_ip = 0;
+  if (ap_nf) {
+    esp_netif_ip_info_t ip;
+    esp_netif_get_ip_info(ap_nf, &ip);
+    gw_ip = ip.gw.addr;
+  }
+  xTaskCreate(dns_server_task, "dns", 4096, (void *)(uintptr_t)gw_ip, 5, NULL);
 }
 
 bool shutong_wifi_is_connected(void) { return s_connected; }

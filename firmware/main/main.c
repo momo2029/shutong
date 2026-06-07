@@ -195,14 +195,84 @@ static void on_mqtt_cmd(const char *type, const char *ref_msg_id) {
 //   vTaskDelete(NULL);
 // }
 
-// ─── HTTP provisioning server ──────────────────────────────
-static esp_err_t prov_handler(httpd_req_t *req) {
-  const char *resp = "<!DOCTYPE html><html><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'><title>书童配网</title><style>body{font-family:sans-serif;background:#1e293b;color:#f8fafc;max-width:400px;margin:40px auto;padding:20px}h2{color:#4f46e5}.card{background:#334155;border-radius:8px;padding:16px;margin:12px 0}input,button{width:100%;padding:10px;margin:4px 0;border-radius:6px;border:none;font-size:14px}button{background:#4f46e5;color:#fff;cursor:pointer}.net{display:flex;justify-content:space-between;padding:8px;border-bottom:1px solid #475569;cursor:pointer}.net:hover{background:#3b4f6b}</style></head><body><h2>书童 配网</h2><div id='nets'></div><div class='card'><input id='ssid' placeholder='WiFi名称'><input id='pass' placeholder='密码' type='password'><button onclick='connect()'>连接</button></div><p id='msg'></p><script>fetch('/scan').then(r=>r.json()).then(d=>{d.forEach(n=>{document.getElementById('nets').innerHTML+='<div class=net onclick=\"document.getElementById(\\'ssid\\').value=\\''+n.ssid+'\\'\">'+n.ssid+' <span>'+(n.rssi+'').slice(0,2)+'</span></div>'})});function connect(){var s=document.getElementById('ssid').value;var p=document.getElementById('pass').value;fetch('/connect',{method:'POST',body:'ssid='+encodeURIComponent(s)+'&pass='+encodeURIComponent(p)}).then(r=>r.text()).then(t=>{document.getElementById('msg').textContent=t})}</script></body></html>";
-  httpd_resp_send(req, resp, HTTPD_RESP_USE_STRLEN);
+// ─── HTTP provisioning server (captive portal) ─────────────
+// Catch-all handler: serve portal page for any path (captive portal compatible)
+static esp_err_t prov_any_handler(httpd_req_t *req) {
+  const char html[] =
+    "<!DOCTYPE html><html><head>"
+    "<meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'>"
+    "<title>书童配网</title>"
+    "<style>"
+    "body{font-family:sans-serif;background:#1e293b;color:#f8fafc;max-width:400px;margin:40px auto;padding:20px}"
+    "h2{color:#4f46e5;text-align:center}"
+    ".card{background:#334155;border-radius:8px;padding:16px;margin:12px 0}"
+    "input,button{width:100%;padding:10px;margin:4px 0;border-radius:6px;border:none;font-size:14px;box-sizing:border-box}"
+    "button{background:#4f46e5;color:#fff;cursor:pointer}"
+    "button:active{background:#3730a3}"
+    ".net{display:flex;justify-content:space-between;padding:8px;border-bottom:1px solid #475569;cursor:pointer}"
+    ".net:hover{background:#3b4f6b}"
+    "#msg{text-align:center;margin-top:8px}"
+    "</style></head><body>"
+    "<h2>🔮 书童 配网</h2>"
+    "<div id='nets' class='card'></div>"
+    "<div class='card'>"
+    "<input id='ssid' placeholder='WiFi名称' autofocus>"
+    "<input id='pass' placeholder='密码' type='password'>"
+    "<button onclick='connect()'>连接</button>"
+    "</div>"
+    "<p id='msg'></p>"
+    "<script>"
+    "fetch('/scan').then(r=>r.json()).then(d=>{"
+    "  let h='';"
+    "  d.forEach(n=>{"
+    "    let icon=n.secure?'&#x1f512;':'&#x1f513;';"
+    "    let es=n.ssid.replace(/'/g,'&apos;');"
+    "    h+='<div class=net onclick=sharp(\"'+es+'\")>'+icon+' '+n.ssid+'<span>'+n.rssi+'</span></div>';"
+    "  });"
+    "  document.getElementById('nets').innerHTML=h;"
+    "}).catch(()=>{"
+    "  document.getElementById('nets').innerHTML='<p style=color:#f87171>正在扫描...</p>';"
+    "  setTimeout(()=>location.reload(),3000);"
+    "});"
+    "function connect(){"
+    "  var s=document.getElementById('ssid').value;"
+    "  var p=document.getElementById('pass').value;"
+    "  if(!s) return alert('请输入WiFi名称');"
+    "  document.getElementById('msg').textContent='连接中...';"
+    "  fetch('/connect',{method:'POST',body:'ssid='+encodeURIComponent(s)+'&pass='+encodeURIComponent(p)})"
+    "    .then(r=>r.text()).then(t=>document.getElementById('msg').textContent=t);"
+    "}"
+    "function sharp(v){document.getElementById('ssid').value=v;}"
+    "</script></body></html>";
+  httpd_resp_set_type(req, "text/html; charset=utf-8");
+  httpd_resp_send(req, html, HTTPD_RESP_USE_STRLEN);
   return ESP_OK;
 }
 
-static esp_err_t scan_handler(httpd_req_t *req) {
+// Apple captive portal: /hotspot-detect.html
+static esp_err_t prov_apple_handler(httpd_req_t *req) {
+  httpd_resp_set_type(req, "text/html; charset=utf-8");
+  httpd_resp_set_status(req, "200 OK");
+  httpd_resp_sendstr(req, "<HTML><HEAD><TITLE>Success</TITLE></HEAD><BODY>Success</BODY></HTML>");
+  return ESP_OK;
+}
+
+// Android captive portal: /generate_204
+static esp_err_t prov_204_handler(httpd_req_t *req) {
+  httpd_resp_set_status(req, "204 No Content");
+  httpd_resp_send(req, NULL, 0);
+  return ESP_OK;
+}
+
+// Windows captive portal: /fwlink/
+static esp_err_t prov_redirect_handler(httpd_req_t *req) {
+  httpd_resp_set_status(req, "302 Found");
+  httpd_resp_set_hdr(req, "Location", "/");
+  httpd_resp_send(req, NULL, 0);
+  return ESP_OK;
+}
+
+static esp_err_t prov_scan_handler(httpd_req_t *req) {
   wifi_scan_config_t scan_cfg = { .show_hidden = false, .scan_type = WIFI_SCAN_TYPE_ACTIVE };
   esp_wifi_scan_start(&scan_cfg, true);
   uint16_t count = 0;
@@ -212,6 +282,7 @@ static esp_err_t scan_handler(httpd_req_t *req) {
 
   cJSON *arr = cJSON_CreateArray();
   for (int i = 0; i < count; i++) {
+    if (strlen((char *)aps[i].ssid) == 0) continue; // skip hidden APs
     cJSON *o = cJSON_CreateObject();
     cJSON_AddStringToObject(o, "ssid", (char *)aps[i].ssid);
     cJSON_AddNumberToObject(o, "rssi", aps[i].rssi);
@@ -220,13 +291,14 @@ static esp_err_t scan_handler(httpd_req_t *req) {
   }
   free(aps);
   char *js = cJSON_PrintUnformatted(arr);
+  httpd_resp_set_type(req, "application/json");
   httpd_resp_send(req, js, HTTPD_RESP_USE_STRLEN);
   cJSON_free(js);
   cJSON_Delete(arr);
   return ESP_OK;
 }
 
-static esp_err_t connect_handler(httpd_req_t *req) {
+static esp_err_t prov_connect_handler(httpd_req_t *req) {
   char buf[128];
   int len = httpd_req_recv(req, buf, sizeof(buf) - 1);
   if (len <= 0) { httpd_resp_sendstr(req, "ERROR"); return ESP_FAIL; }
@@ -238,33 +310,44 @@ static esp_err_t connect_handler(httpd_req_t *req) {
     p += 5;
     int i = 0;
     while (*p && *p != '&' && i < 32) ssid[i++] = *p++;
-    ssid[i] = '\0';
   }
   p = strstr(buf, "pass=");
   if (p) {
     p += 5;
     int i = 0;
     while (*p && *p != '&' && i < 64) pass[i++] = *p++;
-    pass[i] = '\0';
   }
 
   shutong_wifi_request_connect(ssid, pass);
   httpd_resp_sendstr(req, "OK - 正在连接，设备即将重启");
   return ESP_OK;
 }
-
 static void start_prov_server(void) {
   httpd_handle_t server = NULL;
   httpd_config_t cfg = HTTPD_DEFAULT_CONFIG();
-  cfg.max_uri_handlers = 8;
+  cfg.max_uri_handlers = 12;
   httpd_start(&server, &cfg);
 
-  httpd_uri_t root = { .uri = "/", .method = HTTP_GET, .handler = prov_handler, .user_ctx = NULL };
-  httpd_uri_t scan = { .uri = "/scan", .method = HTTP_GET, .handler = scan_handler, .user_ctx = NULL };
-  httpd_uri_t conn = { .uri = "/connect", .method = HTTP_POST, .handler = connect_handler, .user_ctx = NULL };
+  // Register handlers with wildcard URI pattern
+  // Priority: more specific paths first
+  httpd_uri_t scan   = { .uri = "/scan",   .method = HTTP_GET,  .handler = prov_scan_handler,    .user_ctx = NULL };
+  httpd_uri_t conn   = { .uri = "/connect", .method = HTTP_POST, .handler = prov_connect_handler, .user_ctx = NULL };
+  // Captive portal detection endpoints
+  httpd_uri_t apple  = { .uri = "/hotspot-detect.html", .method = HTTP_GET, .handler = prov_apple_handler, .user_ctx = NULL };
+  httpd_uri_t d204   = { .uri = "/generate_204",        .method = HTTP_GET, .handler = prov_204_handler,   .user_ctx = NULL };
+  // Redirect endpoints (302 → /)
+  httpd_uri_t fwlink = { .uri = "/fwlink", .method = HTTP_GET, .handler = prov_redirect_handler, .user_ctx = NULL };
+  httpd_uri_t nc     = { .uri = "/ncsi.txt", .method = HTTP_GET, .handler = prov_redirect_handler, .user_ctx = NULL };
+  httpd_uri_t root   = { .uri = "/",       .method = HTTP_GET,  .handler = prov_any_handler,      .user_ctx = NULL };
+
   httpd_register_uri_handler(server, &root);
   httpd_register_uri_handler(server, &scan);
   httpd_register_uri_handler(server, &conn);
+  httpd_register_uri_handler(server, &apple);
+  httpd_register_uri_handler(server, &d204);
+  httpd_register_uri_handler(server, &fwlink);
+  httpd_register_uri_handler(server, &nc);
+
   ESP_LOGI(TAG, "Provisioning HTTP server started on port 80");
 }
 

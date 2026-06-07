@@ -12,3 +12,7 @@ firmware/dependencies.lock
 firmware/sdkconfig
 firmware/sdkconfig.old
 docker/asr/bin/
+firmware/.cache/
+.qwen/settings.json.orig
+enter_download.py
+read_serial.py
