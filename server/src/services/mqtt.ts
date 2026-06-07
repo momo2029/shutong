@@ -1,22 +1,28 @@
 import mqtt from 'mqtt';
 import { createHmac, timingSafeEqual } from 'crypto';
 import { getEnv } from '../config.js';
-import { db } from '../db/index.js';
+import { raw, db } from '../db/index.js';
 import { devices, notes, noteImages } from '../db/schema.js';
 import { eq } from 'drizzle-orm';
 import { v4 as uuid } from 'uuid';
 import { createTask } from './queue.js';
-import { writeFileSync, mkdirSync, existsSync } from 'fs';
+import { writeFileSync, mkdirSync, existsSync, readFileSync, rmSync, readdirSync, unlinkSync } from 'fs';
 import { join } from 'path';
+import { uploadFile } from './storage.js';
+import { transcribe } from './asr.js';
 
 let client: mqtt.MqttClient | null = null;
 const verifiedDeviceClientIds = new Set<string>();
 
-// ── Audio chunk buffer: note_id → { total, chunks: Map<seq, base64> } ──
-const audioBuffers = new Map<string, { total: number; chunks: Map<number, string> }>();
+// ── Audio chunk tracker: note_id → { total, count } (PCM data on disk) ──
+const audioTrackers = new Map<string, { total: number; count: number; lastAsrSeq: number; asrBusy: boolean }>();
+
+// 哪些笔记正在被用户查看（noteId → 最后查看时间）
+const viewingNotes = new Map<string, number>();
 
 const AUDIO_DIR = join(process.cwd(), 'data', 'audio');
 const IMAGE_DIR = join(process.cwd(), 'data', 'images');
+const CHUNKS_DIR = join(process.cwd(), 'data', 'chunks');
 const DEVICE_USERNAME_SKEW_SECONDS = 300;
 const DEVICE_RELATIVE_TIMESTAMP_MAX_SECONDS = 24 * 60 * 60;
 const DEVICE_UNIX_TIMESTAMP_THRESHOLD_SECONDS = 1_000_000_000;
@@ -27,29 +33,116 @@ function ensureDir(dir: string) {
   }
 }
 
-/**
- * Assemble audio chunks and finalize the note.
- */
-function finalizeAudio(noteId: string, totalChunks: number, deviceUserId: string, deviceId: string) {
-  const buf = audioBuffers.get(noteId);
-  if (!buf) return;
-  audioBuffers.delete(noteId);
+/** 清理超过 2 小时的残留 chunk 缓冲（上次 crash 遗留） */
+function cleanupStaleChunks() {
+  if (!existsSync(CHUNKS_DIR)) return;
+  const now = Date.now();
+  const maxAge = 2 * 60 * 60 * 1000; // 2 小时
+  for (const entry of readdirSync(CHUNKS_DIR, { withFileTypes: true })) {
+    if (!entry.isDirectory()) continue;
+    const dirPath = join(CHUNKS_DIR, entry.name);
+    try {
+      const stat = require('fs').statSync(dirPath);
+      if (now - stat.mtimeMs > maxAge) {
+        rmSync(dirPath, { recursive: true, force: true });
+        console.log(`[MQTT] Cleaned stale chunks: ${entry.name}`);
+      }
+    } catch { /* ignore */ }
+  }
+}
 
-  // Build WAV from ordered chunks
+/**
+ * 实时转写：取 [lastAsrSeq, count) 范围内的 PCM 做增量 ASR，追加到 rawTranscript。
+ */
+async function partialAsr(noteId: string) {
+  const tracker = audioTrackers.get(noteId);
+  if (!tracker) return;
+  if (tracker.asrBusy) return; // 上一批还没转完，跳过
+  tracker.asrBusy = true;
+
+  const chunkDir = join(CHUNKS_DIR, noteId);
+  if (!existsSync(chunkDir)) return;
+
+  const startSeq = tracker.lastAsrSeq;
+  const endSeq = tracker.count;
   const pcmBuffers: Buffer[] = [];
-  for (let i = 0; i < totalChunks; i++) {
-    const b64 = buf.chunks.get(i);
-    if (b64) {
-      pcmBuffers.push(Buffer.from(b64, 'base64'));
+
+  for (let i = startSeq; i < endSeq; i++) {
+    const chunkPath = join(chunkDir, `${i}.pcm`);
+    if (existsSync(chunkPath)) {
+      pcmBuffers.push(readFileSync(chunkPath));
+    }
+  }
+
+  if (pcmBuffers.length === 0) return;
+
+  console.log(`[MQTT] Partial ASR for note ${noteId}: seqs ${startSeq}-${endSeq - 1} (${pcmBuffers.length} chunks)`);
+
+  // 合并 PCM 存为临时 WAV
+  const dataSize = pcmBuffers.reduce((sum, b) => sum + b.length, 0);
+  const header = Buffer.alloc(44);
+  header.write('RIFF', 0);
+  header.writeUInt32LE(36 + dataSize, 4);
+  header.write('WAVE', 8);
+  header.write('fmt ', 12);
+  header.writeUInt32LE(16, 16);
+  header.writeUInt16LE(1, 20);
+  header.writeUInt16LE(1, 22);
+  header.writeUInt32LE(16000, 24);
+  header.writeUInt32LE(16000 * 2, 28);
+  header.writeUInt16LE(2, 32);
+  header.writeUInt16LE(16, 34);
+  header.write('data', 36);
+  header.writeUInt32LE(dataSize, 40);
+  const wav = Buffer.concat([header, ...pcmBuffers]);
+  const tmpWav = join(AUDIO_DIR, `${noteId}_partial.wav`);
+  writeFileSync(tmpWav, wav);
+
+  try {
+    const text = await transcribe(`data/audio/${noteId}_partial.wav`);
+    if (text) {
+      const note = db.select().from(notes).where(eq(notes.id, noteId)).get();
+      const prev = note?.rawTranscript || '';
+      db.update(notes).set({ rawTranscript: prev + '\n' + text }).where(eq(notes.id, noteId)).run();
+      console.log(`[MQTT] Partial ASR done: ${text.length} chars`);
+    }
+  } finally {
+    if (existsSync(tmpWav)) unlinkSync(tmpWav);
+    tracker.lastAsrSeq = endSeq;
+    tracker.asrBusy = false;
+  }
+}
+
+/**
+ * 从磁盘缓冲目录读取 PCM 块，合并为 WAV 上传到七牛云，然后清理。
+ */
+async function finalizeAudio(noteId: string, totalChunks: number, deviceUserId: string, deviceId: string) {
+  const tracker = audioTrackers.get(noteId);
+  if (!tracker) return;
+  audioTrackers.delete(noteId);
+
+  const chunkDir = join(CHUNKS_DIR, noteId);
+  const pcmBuffers: Buffer[] = [];
+  if (existsSync(chunkDir)) {
+    for (let i = 0; i < totalChunks; i++) {
+      const chunkPath = join(chunkDir, `${i}.pcm`);
+      if (existsSync(chunkPath)) {
+        pcmBuffers.push(readFileSync(chunkPath));
+      }
     }
   }
 
   if (pcmBuffers.length === 0) {
     console.log('[MQTT] No valid chunks, skipping');
+    if (existsSync(chunkDir)) rmSync(chunkDir, { recursive: true, force: true });
     return;
   }
 
-  const wavPath = buildWav(pcmBuffers, noteId);
+  const audioPath = buildWav(pcmBuffers, noteId);
+
+  // 清理磁盘缓冲
+  rmSync(chunkDir, { recursive: true, force: true });
+
   const existing = db.select().from(notes).where(eq(notes.id, noteId)).get();
   if (!existing) {
     db.insert(notes).values({
@@ -57,17 +150,17 @@ function finalizeAudio(noteId: string, totalChunks: number, deviceUserId: string
       userId: deviceUserId,
       deviceId: deviceId,
       title: `课堂笔记 ${new Date().toLocaleDateString('zh-CN')}`,
-      audioPath: wavPath,
+      audioPath,
       status: 'processing',
+      createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(),
     }).run();
   } else {
     db.update(notes)
-      .set({ audioPath: wavPath, status: 'processing' })
+      .set({ audioPath, status: 'processing', updatedAt: new Date().toISOString() })
       .where(eq(notes.id, noteId))
       .run();
   }
 
-  // Trigger ASR task
   createTask(noteId, 'asr');
 }
 
@@ -84,34 +177,39 @@ function buildWav(pcmBuffers: Buffer[], noteId: string): string {
   const byteRate = sampleRate * numChannels * (bitsPerSample / 8);
   const blockAlign = numChannels * (bitsPerSample / 8);
 
-  // WAV header: 44 bytes
   const header = Buffer.alloc(44);
-  // RIFF chunk descriptor
   header.write('RIFF', 0);
-  header.writeUInt32LE(36 + dataSize, 4); // file size - 8
+  header.writeUInt32LE(36 + dataSize, 4);
   header.write('WAVE', 8);
-  // fmt sub-chunk
   header.write('fmt ', 12);
-  header.writeUInt32LE(16, 16);        // subchunk size (PCM)
-  header.writeUInt16LE(1, 20);         // audio format (PCM)
+  header.writeUInt32LE(16, 16);
+  header.writeUInt16LE(1, 20);
   header.writeUInt16LE(numChannels, 22);
   header.writeUInt32LE(sampleRate, 24);
   header.writeUInt32LE(byteRate, 28);
   header.writeUInt16LE(blockAlign, 32);
   header.writeUInt16LE(bitsPerSample, 34);
-  // data sub-chunk
   header.write('data', 36);
   header.writeUInt32LE(dataSize, 40);
 
   const wav = Buffer.concat([header, ...pcmBuffers]);
   const wavPath = join(AUDIO_DIR, `${noteId}.wav`);
+  const relativeWavPath = `data/audio/${noteId}.wav`;
   writeFileSync(wavPath, wav);
   console.log(`[MQTT] WAV saved: ${wavPath} (${wav.length} bytes)`);
-  return wavPath;
+  return relativeWavPath;
 }
 
 export function initMQTT() {
   const env = getEnv();
+
+  // 清理上次 crash 残留的 chunk 缓冲目录
+  cleanupStaleChunks();
+
+  // 清理上次异常停止遗留的 recording 状态
+  const leftover = raw.prepare("UPDATE notes SET status = 'failed', updated_at = ? WHERE status = 'recording'").run(new Date().toISOString());
+  if (leftover.changes > 0) console.log(`[MQTT] Marked ${leftover.changes} stale recording notes as failed`);
+
   if (!env.MQTT_BROKER) {
     console.log('[MQTT] No broker configured, skipping');
     return;
@@ -119,7 +217,7 @@ export function initMQTT() {
 
   const opts: mqtt.IClientOptions = {
     clientId: 'sht_svr',
-    clean: true,
+    clean: false,
   };
   if (env.MQTT_USER) {
     opts.username = env.MQTT_USER;
@@ -130,9 +228,9 @@ export function initMQTT() {
   client.on('connect', () => {
     console.log('[MQTT] Connected to', env.MQTT_BROKER);
     client!.subscribe('$SYS/brokers/+/clients/+/connected');
-    client!.subscribe('sht/+/status');
-    client!.subscribe('sht/+/audio/chunk');
-    client!.subscribe('sht/+/image');
+    client!.subscribe('sht/+/status', { qos: 1 });
+    client!.subscribe('sht/+/audio/chunk', { qos: 1 });
+    client!.subscribe('sht/+/image', { qos: 1 });
   });
 
   client.on('message', (topic, message) => {
@@ -369,11 +467,11 @@ async function handleMessage(sn: string, type: string, data: Record<string, unkn
       const eos = p.eos as boolean | undefined;
 
       // EOS 消息：无音频数据，仅标记结束
-      if (eos && noteId && audioBuffers.has(noteId)) {
-        const buf = audioBuffers.get(noteId)!;
-        const actualTotal = buf.chunks.size;
+      if (eos && noteId && audioTrackers.has(noteId)) {
+        const tracker = audioTrackers.get(noteId)!;
+        const actualTotal = tracker.count;
         console.log(`[MQTT] Audio EOS for note: ${noteId}, chunks=${actualTotal}`);
-        finalizeAudio(noteId, actualTotal, device.userId, device.id);
+        await finalizeAudio(noteId, actualTotal, device.userId, device.id);
         break;
       }
 
@@ -383,19 +481,45 @@ async function handleMessage(sn: string, type: string, data: Record<string, unkn
         break;
       }
 
-      // Init buffer for this note
-      if (!audioBuffers.has(noteId)) {
-        audioBuffers.set(noteId, { total, chunks: new Map() });
-      }
-      const buf = audioBuffers.get(noteId)!;
-      buf.chunks.set(seq, audioB64);
+      // 写入磁盘缓冲
+      const chunkDir = join(CHUNKS_DIR, noteId);
+      ensureDir(chunkDir);
+      writeFileSync(join(chunkDir, `${seq}.pcm`), Buffer.from(audioB64, 'base64'));
 
-      // 旧模式：total 已知且收齐 → 直接组装
-      if (total > 0 && buf.chunks.size >= total) {
+      // 更新跟踪器
+      if (!audioTrackers.has(noteId)) {
+        audioTrackers.set(noteId, { total, count: 0, lastAsrSeq: 0, asrBusy: false });
+        // 首次收到 chunk，创建笔记并标记"录制中"
+        const existing = db.select().from(notes).where(eq(notes.id, noteId)).get();
+        if (!existing) {
+          db.insert(notes).values({
+            id: noteId, userId: device.userId, deviceId: device.id,
+            title: `课堂笔记 ${new Date().toLocaleDateString('zh-CN')}`,
+            status: 'recording',
+            createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(),
+          }).run();
+        } else if (existing.status !== 'recording') {
+          db.update(notes).set({ status: 'recording', updatedAt: new Date().toISOString() }).where(eq(notes.id, noteId)).run();
+        }
+      }
+      const tracker = audioTrackers.get(noteId)!;
+      tracker.count++;
+
+      // 根据是否有人在查看，动态调整实时转写间隔
+      // 有人查看：每 10 秒（20 chunks）；无人查看：每 30 秒（60 chunks）
+      const lastView = viewingNotes.get(noteId) || 0;
+      const isBeingViewed = (Date.now() - lastView) < 15000;
+      const asrInterval = isBeingViewed ? 10 : 60;
+      if (tracker.count - tracker.lastAsrSeq >= asrInterval) {
+        partialAsr(noteId).catch(e => console.error('[MQTT] Partial ASR failed:', (e as Error).message));
+      }
+
+      // total 已知且收齐 → 直接组装
+      if (total > 0 && tracker.count >= total) {
         console.log(`[MQTT] Audio complete for note: ${noteId}`);
-        finalizeAudio(noteId, total, device.userId, device.id);
+        await finalizeAudio(noteId, total, device.userId, device.id);
       } else {
-        console.log(`[MQTT] Audio chunk ${seq + 1} for note ${noteId} (${buf.chunks.size} received)`);
+        console.log(`[MQTT] Audio chunk ${seq + 1} for note ${noteId} (${tracker.count} received)`);
       }
       break;
     }
@@ -411,26 +535,40 @@ async function handleMessage(sn: string, type: string, data: Record<string, unkn
         break;
       }
 
-      ensureDir(IMAGE_DIR);
-      const imgPath = join(IMAGE_DIR, `${noteId}_${Date.now()}.${format}`);
       const imgBuf = Buffer.from(imgB64, 'base64');
-      writeFileSync(imgPath, imgBuf);
-      console.log(`[MQTT] Image saved: ${imgPath} (${imgBuf.length} bytes)`);
 
-      // 写入 note_images 表
-      const sortOrder = (db.select()
-        .from(noteImages)
-        .where(eq(noteImages.noteId, noteId))
-        .all().length) || 0;
-      db.insert(noteImages).values({
-        id: uuid(),
-        noteId,
-        imagePath: imgPath,
-        sortOrder,
-      }).run();
+      // 上传到七牛云
+      const key = `images/${noteId}_${Date.now()}.${format}`;
+      try {
+        const { key: imgKey } = await uploadFile(key, imgBuf);
+        console.log(`[MQTT] Image uploaded: ${imgKey} (${imgBuf.length} bytes)`);
 
-      // 触发 OCR（API key 未设置时静默跳过）
-      try { createTask(noteId, 'ocr'); } catch (_e) { /* ignore */ }
+        // 确保 note 存在
+        const existing = db.select().from(notes).where(eq(notes.id, noteId)).get();
+        if (!existing) {
+          db.insert(notes).values({
+            id: noteId, userId: device.userId, deviceId: device.id,
+            title: `课堂笔记 ${new Date().toLocaleDateString('zh-CN')}`,
+            status: 'processing',
+            createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(),
+          }).run();
+        }
+
+        // 写入 note_images 表
+        const sortOrder = (db.select()
+          .from(noteImages)
+          .where(eq(noteImages.noteId, noteId))
+          .all().length) || 0;
+        db.insert(noteImages).values({
+          id: uuid(), noteId,
+          imagePath: imgKey, sortOrder,
+          createdAt: new Date().toISOString(),
+        }).run();
+
+        try { createTask(noteId, 'ocr'); } catch (_e) { /* ignore */ }
+      } catch (e) {
+        console.error('[MQTT] Failed to upload image:', (e as Error).message);
+      }
       break;
     }
   }
@@ -521,3 +659,16 @@ export async function publishCommand(sn: string, cmd: string, params: Record<str
 
   client.publish(`sht/${sn}/cmd`, JSON.stringify(msg), { qos: 1 });
 }
+
+/** 标记笔记正在被用户查看（前端轮询调用） */
+export function markNoteViewed(noteId: string) {
+  viewingNotes.set(noteId, Date.now());
+}
+
+/** 定期清理超时的查看记录（超过 1 分钟没再查看的） */
+setInterval(() => {
+  const now = Date.now();
+  for (const [id, ts] of viewingNotes) {
+    if (now - ts > 60000) viewingNotes.delete(id);
+  }
+}, 60000);

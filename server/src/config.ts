@@ -13,8 +13,10 @@ const env = {
   ASR_SERVICE_URL: process.env.ASR_SERVICE_URL || '',
   OCR_API_KEY: process.env.OCR_API_KEY || '',
   LLM_API_KEY: process.env.LLM_API_KEY || '',
-  LLM_API_URL: process.env.LLM_API_URL || '',
+  LLM_API_URL: process.env.LLM_API_URL || 'https://token-plan-cn.xiaomimimo.com/v1',
+  LLM_MODEL: process.env.LLM_MODEL || 'mimo-v2.5-pro',
   DEVICE_MASTER_KEY: process.env.DEVICE_MASTER_KEY || '',
+  QINIU_IMAGE_STYLE: process.env.QINIU_IMAGE_STYLE || '',
 };
 
 export function getEnv() {

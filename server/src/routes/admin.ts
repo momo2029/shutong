@@ -52,9 +52,9 @@ app.post('/firmware', async (c) => {
   const id = uuid();
   const key = `firmware/${deviceType}_${version}.bin`;
   const { uploadFile } = await import('../services/storage.js');
-  const { url } = await uploadFile(key, Buffer.from(await file.arrayBuffer()));
+  const { key: savedKey } = await uploadFile(key, Buffer.from(await file.arrayBuffer()));
 
-  db.insert(firmware).values({ id, version, deviceType, filePath: url, fileSize: file.size, changelog }).run();
+  db.insert(firmware).values({ id, version, deviceType, filePath: savedKey, fileSize: file.size, changelog }).run();
   return c.json({ ok: true, id });
 });
 

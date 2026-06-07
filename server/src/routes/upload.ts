@@ -3,7 +3,7 @@ import { db } from '../db/index.js';
 import { notes, noteImages } from '../db/schema.js';
 import { v4 as uuid } from 'uuid';
 import { authMiddleware } from '../middleware/auth.js';
-import { uploadFile } from '../services/storage.js';
+import { uploadFile, getMediaUrl } from '../services/storage.js';
 import { eq, and } from 'drizzle-orm';
 import type { Vars } from '../app.js';
 
@@ -20,9 +20,9 @@ app.post('/audio', async (c) => {
   const noteId = uuid();
   const key = `audio/${c.var.user.id}/${noteId}.webm`;
   const buffer = Buffer.from(await file.arrayBuffer());
-  const { url } = await uploadFile(key, buffer);
+  const { key: savedKey } = await uploadFile(key, buffer);
 
-  db.insert(notes).values({ id: noteId, userId: c.var.user.id, title, audioPath: url, status: 'processing' }).run();
+  db.insert(notes).values({ id: noteId, userId: c.var.user.id, title, audioPath: savedKey, status: 'processing' }).run();
   return c.json({ ok: true, id: noteId });
 });
 
@@ -39,10 +39,10 @@ app.post('/image', async (c) => {
   const imageId = uuid();
   const key = `images/${c.var.user.id}/${noteId}/${imageId}.jpg`;
   const buffer = Buffer.from(await file.arrayBuffer());
-  const { url } = await uploadFile(key, buffer);
+  const { key: savedKey } = await uploadFile(key, buffer);
 
-  db.insert(noteImages).values({ id: imageId, noteId, imagePath: url, sortOrder: 0 }).run();
-  return c.json({ ok: true, id: imageId, url });
+  db.insert(noteImages).values({ id: imageId, noteId, imagePath: savedKey, sortOrder: 0 }).run();
+  return c.json({ ok: true, id: imageId, url: getMediaUrl(savedKey) });
 });
 
 export default app;

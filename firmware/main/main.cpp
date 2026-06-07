@@ -38,9 +38,15 @@ static bool s_capturing = false;    // 当前是否有活跃拍照（有录音�
 static char s_note_id[37];
 static int  s_chunk_seq = 0;
 static int  s_silence_secs = 0;     // 连续静音秒数（达到10秒结束录音）
+static int  s_note_elapsed = 0;     // 当前笔记已录秒数（达到10分钟自动切割）
+
+// 笔记切割策略：
+// - 静音 10 秒 → 结束当前笔记
+// - 连续录音 1 小时 → 自动切割新笔记
+#define NOTE_MAX_DURATION (60 * 60)  // 1小时自动切割
 
 // 内部缓冲区
-#define AUDIO_CHUNK_SAMPLES (16000 * 2) // 2秒每块
+#define AUDIO_CHUNK_SAMPLES (16000 / 2) // 0.5秒每块
 static int16_t *s_record_buf = NULL;
 
 static device_info_t s_dev_info = {
@@ -93,18 +99,27 @@ static void start_recording(void) {
   generate_note_id();
   s_chunk_seq = 0;
   s_silence_secs = 0;
+  s_note_elapsed = 0;
   s_recording = true;
   s_capturing = true;
   ESP_LOGI(TAG, "Recording START: %s", s_note_id);
   set_led(LED_SOLID);
 }
 
+// 发送 EOS 标记结束当前笔记
+static void send_eos(void) {
+  if (!s_recording) return;
+  char eos_json[256];
+  snprintf(eos_json, sizeof(eos_json),
+    "{\"type\":\"audio_eos\",\"payload\":{\"note_id\":\"%s\",\"total\":%d,\"eos\":true}}",
+    s_note_id, s_chunk_seq);
+  shutong_mqtt_publish("audio/chunk", eos_json);
+  ESP_LOGI(TAG, "EOS sent: %s, chunks=%d", s_note_id, s_chunk_seq);
+}
+
 // ─── 结束当前录音 ────────────────────────────────────────
 static void stop_recording(void) {
   if (!s_recording) return;
-
-  // 发送最后一块标记 total（当前 seq 即为总块数）
-  // 注：最后一块已在 record_task 的静音逻辑中发送，此处仅收尾
   ESP_LOGI(TAG, "Recording END: %s, chunks=%d", s_note_id, s_chunk_seq);
 
   s_recording = false;
@@ -121,105 +136,77 @@ static void stop_recording(void) {
 
 // ─── audio chunk 发送 ────────────────────────────────────
 static void send_audio_chunk(const int16_t *buf, int samples, int total, bool eos) {
-  cJSON *json = proto_build_audio_chunk(s_note_id, s_chunk_seq, total,
-                                         (const uint8_t *)buf, samples * 2);
-  // 附加 eos 标记
-  if (eos) {
-    cJSON *p = cJSON_GetObjectItem(json, "payload");
-    if (p) cJSON_AddBoolToObject(p, "eos", true);
-  }
-  char *str = cJSON_PrintUnformatted(json);
+  // 使用新 API 手动构建 JSON（避免 cJSON 大负载问题）
+  char *str = shutong_build_audio_json(s_note_id, s_chunk_seq, total,
+                                        (const uint8_t *)buf, samples * 2);
+  if (!str) return;
   shutong_mqtt_publish("audio/chunk", str);
-  cJSON_free(str);
-  cJSON_Delete(json);
+  free(str);
   s_chunk_seq++;
 }
 
 // ─── photo（JPEG）发送 ──────────────────────────────────
 static void send_photo(const uint8_t *jpeg, size_t len) {
-  cJSON *json = proto_build_image(s_note_id, (uint8_t *)jpeg, len);
-  char *str = cJSON_PrintUnformatted(json);
+  char *str = shutong_build_image_json(s_note_id, jpeg, len);
+  if (!str) return;
   shutong_mqtt_publish("image", str);
-  cJSON_free(str);
-  cJSON_Delete(json);
+  free(str);
   ESP_LOGI(TAG, "Photo uploaded: %u bytes", (unsigned)len);
 }
 
 // ═══════════════════════════════════════════════════════════
-//  任务1：录音任务（VAD 自动录音）
+//  任务1：录音任务（VAD 自动录音 + 10分钟自动切割）
 // ═══════════════════════════════════════════════════════════
 static void record_task(void *arg) {
   while (1) {
     if (!s_auto_record || !shutong_mqtt_is_connected()) {
-      // 未开启自动录音或 MQTT 未连接 → 静候
       vTaskDelay(pdMS_TO_TICKS(200));
       continue;
     }
 
-    // 读取 2 秒音频
     int read = shutong_audio_read(s_record_buf, AUDIO_CHUNK_SAMPLES);
     if (read <= 0) continue;
 
-    // VAD 检测
     bool has_voice = shutong_audio_has_voice(s_record_buf, read);
 
     if (has_voice) {
       // ── 有人声 ──
       if (!s_recording) {
-        // 之前静音，刚检测到人声 → 开始新录音
         start_recording();
-
-        // 发送预卷数据（环形缓冲区中的最近 ~5 秒，包含当前块）
-        size_t pre_samples = shutong_audio_buffer_available();
-        if (pre_samples > AUDIO_CHUNK_SAMPLES * 3) {
-          pre_samples = AUDIO_CHUNK_SAMPLES * 3; // 最多发 3 个预卷块（6秒）
-        }
-
-        if (pre_samples > 0) {
-          int16_t *pre_buf = (int16_t *)heap_caps_malloc(pre_samples * 2, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-          if (pre_buf) {
-            size_t got = shutong_audio_buffer_read(pre_buf, pre_samples);
-            int pos = 0;
-            while (pos < (int)got) {
-              int chunk_sz = (got - pos > AUDIO_CHUNK_SAMPLES) ? AUDIO_CHUNK_SAMPLES : (got - pos);
-              send_audio_chunk(pre_buf + pos, chunk_sz, 0, false);
-              pos += chunk_sz;
-            }
-            free(pre_buf);
-          }
-        }
-        // 注意：预卷已包含当前块，不重复发送
+        send_audio_chunk(s_record_buf, read, 0, false);
       } else {
-        // 已在录音中 → 发送当前块
         send_audio_chunk(s_record_buf, read, 0, false);
       }
       s_silence_secs = 0;
+      s_note_elapsed++;
       set_led(LED_SOLID);
+
+      // 时间切割：连续录音达到 10 分钟 → 自动切笔记
+      if (s_note_elapsed >= NOTE_MAX_DURATION) {
+        ESP_LOGI(TAG, "Note auto-rotated at %ds", s_note_elapsed);
+        send_eos();
+        stop_recording();
+        vTaskDelay(pdMS_TO_TICKS(500));
+        start_recording();
+      }
 
     } else {
       // ── 无人声 ──
       if (s_recording) {
-        s_silence_secs += 2; // 每次读 2 秒
-        // 仍然发送静音块，让录音连续
+        s_silence_secs++;
+        s_note_elapsed++;
         send_audio_chunk(s_record_buf, read, 0, false);
 
-        if (s_silence_secs >= 10) {
-          // 静音超过 10 秒 → 结束录音
-          // 发送最后一块带 eos 标记
-          // 注：刚才已经发了这个块，单独发一个 eos 标记
-          cJSON *json = cJSON_CreateObject();
-          cJSON_AddStringToObject(json, "type", "audio_eos");
-          cJSON *p = cJSON_CreateObject();
-          cJSON_AddStringToObject(p, "note_id", s_note_id);
-          cJSON_AddNumberToObject(p, "total", s_chunk_seq);
-          cJSON_AddBoolToObject(p, "eos", true);
-          cJSON_AddItemToObject(json, "payload", p);
-          char *str = cJSON_PrintUnformatted(json);
-          shutong_mqtt_publish("audio/chunk", str);
-          cJSON_free(str);
-          cJSON_Delete(json);
-
+        bool time_up = (s_note_elapsed >= NOTE_MAX_DURATION);
+        bool silence_timeout = (s_silence_secs >= 20);
+        if (silence_timeout || time_up) {
+          send_eos();
           stop_recording();
+          if (time_up && s_auto_record) {
+            ESP_LOGI(TAG, "Note auto-rotated at %ds", s_note_elapsed);
+            vTaskDelay(pdMS_TO_TICKS(500));
+            start_recording();
+          }
         }
       }
     }
@@ -237,8 +224,15 @@ static void capture_task(void *arg) {
     }
 
 #ifdef CONFIG_SHUTONG_FLAGSHIP
-    // 拍照
+    // 开启红外补光，提升暗光画质
+    gpio_set_level(IR_LED_GPIO, 1);
+    vTaskDelay(pdMS_TO_TICKS(50)); // 等待 LED 稳定
+
     camera_fb_t *fb = shutong_camera_capture();
+
+    // 关补光
+    gpio_set_level(IR_LED_GPIO, 0);
+
     if (!fb) {
       vTaskDelay(pdMS_TO_TICKS(500));
       continue;
@@ -248,16 +242,14 @@ static void capture_task(void *arg) {
     bool changed = shutong_detect_frame_diff(fb->buf, fb->len);
 
     if (!changed) {
-      // 画面无变化 → 丢弃
       shutong_camera_return(fb);
       vTaskDelay(pdMS_TO_TICKS(2500));
       continue;
     }
 
-    // ── 人脸检测（可选） ──
+    // ── 人脸检测（当前始终返回 true） ──
     bool has_face = shutong_detect_has_face(fb->buf, fb->len);
     if (!has_face) {
-      // 无人脸 → 丢弃但记录（可能只翻页了黑板）
       ESP_LOGD(TAG, "Frame changed but no face, skipping upload");
       shutong_camera_return(fb);
       vTaskDelay(pdMS_TO_TICKS(2500));
@@ -267,7 +259,7 @@ static void capture_task(void *arg) {
     // ── 变化 + 含人脸 → MQTT 上传 ──
     send_photo(fb->buf, fb->len);
 
-    // 本地 SD 存储（可选，保留一份）
+    // 本地 SD 存储（保留一份）
     if (shutong_sdcard_mounted()) {
       char path[128];
       char dir[96];
@@ -314,7 +306,6 @@ static void on_mqtt_cmd(const char *type, const char *payload_json, const char *
   ESP_LOGI(TAG, "MQTT msg type=%s ref=%s", type, ref_msg_id ? ref_msg_id : "");
 
   if (strcmp(type, "cmd") == 0 && payload_json) {
-    // 解析 payload 中的 cmd 字段
     cJSON *json = cJSON_Parse(payload_json);
     if (!json) return;
 
@@ -325,22 +316,19 @@ static void on_mqtt_cmd(const char *type, const char *payload_json, const char *
       case CMD_START_RECORD:
         ESP_LOGI(TAG, "CMD: start_record");
         s_auto_record = true;
-        if (!s_recording) {
-          // 如果有正在录音则不管，VAD 会继续
-        }
         break;
 
       case CMD_STOP_RECORD:
         ESP_LOGI(TAG, "CMD: stop_record");
         s_auto_record = false;
         if (s_recording) {
+          send_eos();
           stop_recording();
         }
         break;
 
       case CMD_PING:
         ESP_LOGI(TAG, "CMD: ping");
-        // 回复 ACK
         {
           cJSON *ack = proto_build_cmd_ack(ref, "pong", NULL);
           char *str = cJSON_PrintUnformatted(ack);
@@ -356,6 +344,39 @@ static void on_mqtt_cmd(const char *type, const char *payload_json, const char *
         esp_restart();
         break;
 
+      case CMD_CAPTURE:
+        ESP_LOGI(TAG, "CMD: capture");
+#ifdef CONFIG_SHUTONG_FLAGSHIP
+        {
+          // 如果没在录音，先生成一个临时 note_id
+          if (!s_recording) {
+            generate_note_id(); // 写入 s_note_id
+          }
+          // 开启红外补光
+          gpio_set_level(IR_LED_GPIO, 1);
+          vTaskDelay(pdMS_TO_TICKS(100));
+          camera_fb_t *fb = shutong_camera_capture();
+          gpio_set_level(IR_LED_GPIO, 0);
+          if (fb) {
+            send_photo(fb->buf, fb->len);
+            shutong_camera_return(fb);
+            // 如果临时生成的，删除 SD 上残留的录音目录
+            if (s_note_id[0] && shutong_sdcard_mounted()) {
+              char dir[96];
+              snprintf(dir, sizeof(dir), SD_MOUNT_POINT "/rec/%s", s_note_id);
+              // 等几秒让照片存完
+            }
+          }
+          // 发 ACK
+          cJSON *ack = proto_build_cmd_ack(ref, "captured", NULL);
+          char *str = cJSON_PrintUnformatted(ack);
+          shutong_mqtt_publish("cmd/ack", str);
+          cJSON_free(str);
+          cJSON_Delete(ack);
+        }
+#endif
+        break;
+
       default:
         ESP_LOGW(TAG, "Unknown cmd");
         break;
@@ -369,6 +390,9 @@ static void on_mqtt_cmd(const char *type, const char *payload_json, const char *
 extern "C" void app_main(void) {
   ESP_LOGI(TAG, "书童 旗舰版 v%s SN=%s 自动录音模式", s_dev_info.fw_ver, CONFIG_SHUTONG_SN);
 
+  // 提前分配 base64 缓冲区（此时堆最干净）
+  shutong_proto_init();
+
   // Init NVS
   esp_err_t ret = nvs_flash_init();
   if (ret == ESP_ERR_NVS_NO_FREE_PAGES || ret == ESP_ERR_NVS_NEW_VERSION_FOUND) {
@@ -381,6 +405,9 @@ extern "C" void app_main(void) {
   // GPIO
   gpio_reset_pin(BUILTIN_LED_GPIO);
   gpio_set_direction(BUILTIN_LED_GPIO, GPIO_MODE_OUTPUT);
+  gpio_reset_pin(IR_LED_GPIO);
+  gpio_set_direction(IR_LED_GPIO, GPIO_MODE_OUTPUT);
+  gpio_set_level(IR_LED_GPIO, 0);
   gpio_reset_pin(BOOT_BUTTON_GPIO);
   gpio_set_direction(BOOT_BUTTON_GPIO, GPIO_MODE_INPUT);
   gpio_set_pull_mode(BOOT_BUTTON_GPIO, GPIO_PULLUP_ONLY);
@@ -389,10 +416,8 @@ extern "C" void app_main(void) {
   shutong_audio_init();
   shutong_speaker_init();
 
-  // 录音缓冲区
-  s_record_buf = (int16_t *)heap_caps_calloc(AUDIO_CHUNK_SAMPLES, sizeof(int16_t),
-                                               MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-  if (!s_record_buf) s_record_buf = (int16_t *)calloc(AUDIO_CHUNK_SAMPLES, sizeof(int16_t));
+  // 录音缓冲区 — 用内部 DRAM 避免 PSRAM 缓存一致性问题
+  s_record_buf = (int16_t *)calloc(AUDIO_CHUNK_SAMPLES, sizeof(int16_t));
 
   // SD 卡
   shutong_sdcard_init();
@@ -406,10 +431,12 @@ extern "C" void app_main(void) {
     if (s_auto_record) {
       ESP_LOGI(TAG, "Auto-record ON (button)");
       set_led(LED_SLOW_BLINK);
-      // 如果正在录音则不重置
     } else {
       ESP_LOGI(TAG, "Auto-record OFF (button)");
-      if (s_recording) stop_recording();
+      if (s_recording) {
+        send_eos();
+        stop_recording();
+      }
       set_led(LED_OFF);
     }
   });
@@ -417,7 +444,6 @@ extern "C" void app_main(void) {
   // 相机（旗舰版）
 #ifdef CONFIG_SHUTONG_FLAGSHIP
   shutong_camera_init();
-  // 设置为 VGA 以减少数据量，教室黑板足够
   sensor_t *s = esp_camera_sensor_get();
   if (s) {
     s->set_framesize(s, FRAMESIZE_VGA);
@@ -453,7 +479,7 @@ extern "C" void app_main(void) {
     while (1) vTaskDelay(pdMS_TO_TICKS(1000));
   }
 
-  // MQTT 初始化（使用修改后的 callback 签名传入消息处理）
+  // MQTT 初始化
   shutong_mqtt_init(CONFIG_SHUTONG_SN, CONFIG_MQTT_BROKER_URL, on_mqtt_cmd);
 
   // 启动任务
@@ -469,18 +495,16 @@ extern "C" void app_main(void) {
   cJSON_free(str);
   cJSON_Delete(json);
 
-  ESP_LOGI(TAG, "Online — auto-record=%s", s_auto_record ? "ON (VAD)" : "OFF");
+  ESP_LOGI(TAG, "Online — auto-record=%s (1h auto-rotate)", s_auto_record ? "ON (VAD)" : "OFF");
   if (s_auto_record) set_led(LED_SLOW_BLINK);
 
   while (1) {
-    // LED 闪烁管理
     if (s_recording) {
       set_led(LED_SOLID);
     } else if (s_auto_record) {
-      // 待机时慢速呼吸（每 2 秒 flip 一次）
       static int blink_tick = 0;
       blink_tick++;
-      if (blink_tick >= 20) { // ~2秒
+      if (blink_tick >= 20) {
         set_led(LED_SLOW_BLINK);
         blink_tick = 0;
       }

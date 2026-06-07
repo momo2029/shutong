@@ -29,7 +29,7 @@
     </div>
     <div class="meta-item">
       <span class="meta-label">最后在线</span>
-      <span class="meta-value"><%= device.lastSeen ? new Date(device.lastSeen).toLocaleString('zh-CN') : '—' %></span>
+      <span class="meta-value"><%= device.lastSeen && device.lastSeen[0] !== '(' ? new Date(new Date(device.lastSeen).getTime() + 8*3600000).toISOString().replace('T',' ').substring(0,19) : '—' %></span>
     </div>
     <div class="meta-item">
       <span class="meta-label">序列号</span>
@@ -72,14 +72,16 @@
             <a href="/notes/<%= note.id %>"><%= note.title %></a>
           </div>
           <div class="note-card-meta">
-            <span><%= new Date(note.createdAt).toLocaleString('zh-CN') %></span>
+            <span><%= note.createdAt && note.createdAt[0] !== '(' ? new Date(new Date(note.createdAt).getTime() + 8*3600000).toISOString().replace('T',' ').substring(0,19) : '未知' %></span>
             <% if (note.duration) { %>
               <span><%= (note.duration / 60).toFixed(0) %> 分 <%= note.duration % 60 %> 秒</span>
             <% } %>
           </div>
         </div>
         <div class="note-card-side">
-          <% if (note.status === 'ready') { %>
+          <% if (note.status === 'recording') { %>
+            <span class="tag tag-recording">● 录制中</span>
+          <% } else if (note.status === 'ready') { %>
             <span class="tag tag-success">完成</span>
           <% } else if (note.status === 'processing') { %>
             <span class="tag tag-warning">处理中</span>

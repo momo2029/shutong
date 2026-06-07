@@ -146,6 +146,14 @@ body {
 .tag-success { background: #dcfce7; color: #16a34a; }
 .tag-warning { background: #fef3c7; color: #d97706; }
 .tag-error { background: #fee2e2; color: #dc2626; }
+.tag-recording {
+  background: #fee2e2; color: #dc2626;
+  animation: recording-pulse 1.2s ease-in-out infinite;
+}
+@keyframes recording-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.4; }
+}
 
 /* Utilities */
 .mt-1 { margin-top: 8px; }
@@ -155,6 +163,14 @@ body {
 .text-center { text-align: center; }
 .flex-between { display: flex; justify-content: space-between; align-items: center; }
 .gap-2 { gap: 8px; }
+
+/* Pagination */
+.pagination {
+  display: flex; justify-content: center; align-items: center; gap: 12px;
+  margin-top: 20px; padding: 12px 0;
+}
+.pagination .disabled { opacity: 0.4; pointer-events: none; }
+.pagination-info { font-size: 14px; color: var(--text-muted); }
 
 /* Responsive */
 @media (max-width: 640px) {
@@ -366,3 +382,19 @@ body {
 .cmd-btn.primary:hover { background: var(--primary-dark); }
 .cmd-btn.danger { color: #ef4444; }
 .cmd-btn.danger:hover { border-color: #ef4444; background: #fef2f2; }
+
+/* ========== Markdown Body ========== */
+.md-body { line-height: 1.8; font-size: 14px; }
+.md-body h1, .md-body h2, .md-body h3, .md-body h4 { margin: 16px 0 8px; font-weight: 600; }
+.md-body h1 { font-size: 18px; } .md-body h2 { font-size: 16px; } .md-body h3 { font-size: 15px; }
+.md-body p { margin: 8px 0; }
+.md-body ul, .md-body ol { padding-left: 20px; margin: 8px 0; }
+.md-body li { margin: 4px 0; }
+.md-body code { background: #f1f5f9; padding: 2px 6px; border-radius: 4px; font-size: 13px; font-family: monospace; }
+.md-body pre { background: #f1f5f9; padding: 12px; border-radius: 6px; overflow-x: auto; margin: 8px 0; }
+.md-body pre code { background: none; padding: 0; }
+.md-body blockquote { border-left: 3px solid var(--primary); padding-left: 12px; color: var(--text-muted); margin: 8px 0; }
+.md-body strong { font-weight: 600; }
+.md-body table { border-collapse: collapse; width: 100%; margin: 8px 0; }
+.md-body th, .md-body td { border: 1px solid var(--border); padding: 6px 10px; text-align: left; font-size: 13px; }
+.md-body th { background: #f8fafc; font-weight: 600; }

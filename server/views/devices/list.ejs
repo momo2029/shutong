@@ -33,11 +33,11 @@
       </div>
       <div class="device-info-row">
         <span class="info-label">最后在线</span>
-        <span class="info-value"><%= device.lastSeen ? new Date(device.lastSeen).toLocaleString('zh-CN') : '—' %></span>
+        <span class="info-value"><%= device.lastSeen && device.lastSeen[0] !== '(' ? new Date(new Date(device.lastSeen).getTime() + 8*3600000).toISOString().replace('T',' ').substring(0,19) : '—' %></span>
       </div>
       <div class="device-info-row">
         <span class="info-label">绑定时间</span>
-        <span class="info-value"><%= new Date(device.createdAt).toLocaleString('zh-CN') %></span>
+        <span class="info-value"><%= device.createdAt && device.createdAt[0] !== '(' ? new Date(new Date(device.createdAt).getTime() + 8*3600000).toISOString().replace('T',' ').substring(0,19) : '—' %></span>
       </div>
     </div>
     <div class="device-card-footer">

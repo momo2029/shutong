@@ -21,11 +21,14 @@ services:
       - QINIU_SECRET_KEY=${QINIU_SECRET_KEY:-}
       - QINIU_BUCKET=${QINIU_BUCKET:-shutong3198}
       - QINIU_DOMAIN=${QINIU_DOMAIN:-shutong3198.3198.net}
+      - QINIU_IMAGE_STYLE=${QINIU_IMAGE_STYLE:-view.webp}
       - BASE_URL=https://shutong.3198.net
       - ASR_SERVICE_URL=http://asr:8888
+      - ASR_API_KEY=${ASR_API_KEY:-}
       - OCR_API_KEY=${OCR_API_KEY:-}
       - LLM_API_KEY=${LLM_API_KEY:-}
       - LLM_API_URL=${LLM_API_URL:-}
+      - LLM_MODEL=${LLM_MODEL:-mimo-v2.5-pro}
     restart: unless-stopped
     depends_on:
       - emqx

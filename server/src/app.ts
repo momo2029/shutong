@@ -2,8 +2,10 @@ import { Hono } from 'hono';
 import { serveStatic } from '@hono/node-server/serve-static';
 import { getEnv } from './config.js';
 import { db } from './db/index.js';
-import { users, courses, devices, notes } from './db/schema.js';
-import { eq, and } from 'drizzle-orm';
+import { users, courses, devices, notes, noteImages } from './db/schema.js';
+import { eq, and, desc } from 'drizzle-orm';
+import { marked } from 'marked';
+import { getMediaUrl } from './services/storage.js';
 
 // Custom context variables
 export type Vars = {
@@ -62,6 +64,7 @@ app.use('*', async (c, next) => {
 
 // Static files
 app.use('/public/*', serveStatic({ root: '.' }));
+app.use('/data/*', serveStatic({ root: '.' }));
 
 // EJS page routes
 app.get('/', async (c) => c.var.render('dashboard/index.ejs', { title: '工作台' }));
@@ -102,7 +105,19 @@ app.get('/devices/:id', async (c) => {
     return c.var.render('devices/detail.ejs', { title: device.name, device, notes: noteList });
   } catch (e) { return c.redirect('/auth/login'); }
 });
-app.get('/courses', async (c) => c.var.render('courses/list.ejs', { title: '课程' }));
+app.get('/courses', async (c) => {
+  const cookie = c.req.header('cookie') || '';
+  const match = cookie.match(/token=([^;]+)/);
+  let courseList: Array<{ id: string; name: string; semester: string; description: string }> = [];
+  if (match) {
+    try {
+      const { verifyJWT } = await import('./utils/jwt.js');
+      const payload = await verifyJWT(match[1]);
+      courseList = db.select().from(courses).where(eq(courses.userId, payload.sub as string)).all();
+    } catch (e) { /* fall through */ }
+  }
+  return c.var.render('courses/list.ejs', { title: '课程', courses: courseList });
+});
 app.get('/courses/new', async (c) => {
   const cookie = c.req.header('cookie') || '';
   if (!cookie.match(/token=([^;]+)/)) return c.redirect('/auth/login');
@@ -124,14 +139,20 @@ app.get('/notes', async (c) => {
   const cookie = c.req.header('cookie') || '';
   const match = cookie.match(/token=([^;]+)/);
   let noteList: any[] = [];
+  let totalNotes = 0;
+  const page = Math.max(1, parseInt(c.req.query('page') || '1'));
+  const perPage = 15;
   if (match) {
     try {
       const { verifyJWT } = await import('./utils/jwt.js');
       const payload = await verifyJWT(match[1]);
-      noteList = db.select().from(notes).where(eq(notes.userId, payload.sub as string)).orderBy(notes.createdAt).all();
+      const all = db.select().from(notes).where(eq(notes.userId, payload.sub as string)).orderBy(desc(notes.createdAt)).all();
+      totalNotes = all.length;
+      noteList = all.slice((page - 1) * perPage, page * perPage);
     } catch (e) { /* fall through */ }
   }
-  return c.var.render('notes/list.ejs', { title: '笔记', notes: noteList });
+  const totalPages = Math.ceil(totalNotes / perPage);
+  return c.var.render('notes/list.ejs', { title: '笔记', notes: noteList, page, totalPages });
 });
 app.get('/notes/record', async (c) => {
   const cookie = c.req.header('cookie') || '';
@@ -149,7 +170,27 @@ app.get('/notes/:id', async (c) => {
     const payload = await verifyJWT(match[1]);
     const note = db.select().from(notes).where(and(eq(notes.id, c.req.param('id')), eq(notes.userId, payload.sub as string))).get();
     if (!note) return (await c.var.render('notes/list.ejs', { title: '笔记', notes: [] }));
-    return c.var.render('notes/detail.ejs', { title: note.title, note });
+    const images = db.select().from(noteImages).where(eq(noteImages.noteId, note.id)).orderBy(noteImages.sortOrder).all();
+    // 查询关联课程
+    let courseName = '';
+    if (note.courseId) {
+      const course = db.select().from(courses).where(eq(courses.id, note.courseId)).get();
+      courseName = course?.name || '';
+    }
+    // 生成七牛云私有下载 URL（图片可选样式处理）
+    const imageStyle = getEnv().QINIU_IMAGE_STYLE;
+    const noteWithHtml = {
+      ...note,
+      audioPath: getMediaUrl(note.audioPath, { expiresIn: 86400 }), // 音频 24h
+      aiSummaryHtml: note.aiSummary ? marked.parse(note.aiSummary) : '',
+      examPointsHtml: note.examPoints ? marked.parse(note.examPoints) : '',
+      mindMapHtml: note.mindMap ? marked.parse(note.mindMap) : '',
+    };
+    const imagesWithUrls = images.map(img => ({
+      ...img,
+      imagePath: getMediaUrl(img.imagePath, { style: imageStyle, expiresIn: 86400 }),
+    }));
+    return c.var.render('notes/detail.ejs', { title: note.title, note: noteWithHtml, images: imagesWithUrls, courseName });
   } catch (e) { return c.redirect('/auth/login'); }
 });
 app.get('/knowledge/ask', async (c) => c.var.render('knowledge/ask.ejs', { title: '知识库问答' }));
