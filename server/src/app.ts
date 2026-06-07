@@ -2,7 +2,7 @@ import { Hono } from 'hono';
 import { serveStatic } from '@hono/node-server/serve-static';
 import { getEnv } from './config.js';
 import { db } from './db/index.js';
-import { users, courses, devices } from './db/schema.js';
+import { users, courses, devices, notes } from './db/schema.js';
 import { eq, and } from 'drizzle-orm';
 
 // Custom context variables
@@ -89,6 +89,19 @@ app.get('/devices/bind', async (c) => {
   if (!cookie.match(/token=([^;]+)/)) return c.redirect('/auth/login');
   return c.var.render('devices/bind.ejs', { title: '绑定设备' });
 });
+app.get('/devices/:id', async (c) => {
+  const cookie = c.req.header('cookie') || '';
+  const match = cookie.match(/token=([^;]+)/);
+  if (!match) return c.redirect('/auth/login');
+  try {
+    const { verifyJWT } = await import('./utils/jwt.js');
+    const payload = await verifyJWT(match[1]);
+    const device = db.select().from(devices).where(and(eq(devices.id, c.req.param('id')), eq(devices.userId, payload.sub as string))).get();
+    if (!device) return (await c.var.render('devices/list.ejs', { title: '我的设备', devices: [] }));
+    const noteList = db.select().from(notes).where(eq(notes.deviceId, device.id)).orderBy(notes.createdAt).all();
+    return c.var.render('devices/detail.ejs', { title: device.name, device, notes: noteList });
+  } catch (e) { return c.redirect('/auth/login'); }
+});
 app.get('/courses', async (c) => c.var.render('courses/list.ejs', { title: '课程' }));
 app.get('/courses/new', async (c) => {
   const cookie = c.req.header('cookie') || '';
@@ -107,7 +120,19 @@ app.get('/courses/:id/edit', async (c) => {
   } catch (e) { /* fall through */ }
   return c.var.render('courses/form.ejs', { title: '编辑课程' });
 });
-app.get('/notes', async (c) => c.var.render('notes/list.ejs', { title: '笔记' }));
+app.get('/notes', async (c) => {
+  const cookie = c.req.header('cookie') || '';
+  const match = cookie.match(/token=([^;]+)/);
+  let noteList: any[] = [];
+  if (match) {
+    try {
+      const { verifyJWT } = await import('./utils/jwt.js');
+      const payload = await verifyJWT(match[1]);
+      noteList = db.select().from(notes).where(eq(notes.userId, payload.sub as string)).orderBy(notes.createdAt).all();
+    } catch (e) { /* fall through */ }
+  }
+  return c.var.render('notes/list.ejs', { title: '笔记', notes: noteList });
+});
 app.get('/notes/record', async (c) => {
   const cookie = c.req.header('cookie') || '';
   const match = cookie.match(/token=([^;]+)/);
@@ -115,7 +140,18 @@ app.get('/notes/record', async (c) => {
   return c.var.render('notes/record.ejs', { title: '录音' });
 });
 app.get('/notes/search', async (c) => c.var.render('notes/search.ejs', { title: '搜索笔记' }));
-app.get('/notes/:id', async (c) => c.var.render('notes/detail.ejs', { title: '笔记详情' }));
+app.get('/notes/:id', async (c) => {
+  const cookie = c.req.header('cookie') || '';
+  const match = cookie.match(/token=([^;]+)/);
+  if (!match) return c.redirect('/auth/login');
+  try {
+    const { verifyJWT } = await import('./utils/jwt.js');
+    const payload = await verifyJWT(match[1]);
+    const note = db.select().from(notes).where(and(eq(notes.id, c.req.param('id')), eq(notes.userId, payload.sub as string))).get();
+    if (!note) return (await c.var.render('notes/list.ejs', { title: '笔记', notes: [] }));
+    return c.var.render('notes/detail.ejs', { title: note.title, note });
+  } catch (e) { return c.redirect('/auth/login'); }
+});
 app.get('/knowledge/ask', async (c) => c.var.render('knowledge/ask.ejs', { title: '知识库问答' }));
 app.get('/admin', async (c) => c.var.render('admin/index.ejs', { title: '管理后台' }));
 app.get('/admin/users', async (c) => c.var.render('admin/users.ejs', { title: '用户管理' }));

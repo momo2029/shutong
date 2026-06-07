@@ -1,15 +1,71 @@
-<h2>笔记详情</h2>
-<div class="card mt-2">
-  <div class="flex-between">
-    <h3>加载中...</h3>
-    <span class="tag tag-warning">处理中</span>
+<div class="flex-between">
+  <h2><%= note.title %></h2>
+  <div>
+    <% if (note.status === 'ready') { %>
+      <span class="tag tag-success">已完成</span>
+    <% } else if (note.status === 'processing') { %>
+      <span class="tag tag-warning">处理中</span>
+    <% } else if (note.status === 'failed') { %>
+      <span class="tag tag-error">处理失败</span>
+    <% } %>
   </div>
 </div>
+
 <div class="card mt-2">
-  <h4>AI 摘要</h4>
-  <p class="text-muted">等待AI处理...</p>
+  <div class="note-card-meta" style="margin-bottom:12px;">
+    <span>📅 <%= new Date(note.createdAt).toLocaleString('zh-CN') %></span>
+    <% if (note.duration) { %>
+      <span>⏱ <%= (note.duration / 60).toFixed(0) %> 分 <%= note.duration % 60 %> 秒</span>
+    <% } %>
+    <% if (note.tags) { %>
+      <span>🏷 <%= note.tags %></span>
+    <% } %>
+  </div>
+
+  <% if (note.audioPath) { %>
+  <div style="margin-bottom:16px;">
+    <audio controls style="width:100%;" preload="metadata">
+      <source src="/<%= note.audioPath %>" type="audio/wav">
+    </audio>
+  </div>
+  <% } %>
 </div>
+
 <div class="card mt-2">
-  <h4>考试重点</h4>
-  <p class="text-muted">等待AI处理...</p>
+  <h4>📝 原文转录</h4>
+  <% if (note.rawTranscript) { %>
+    <p style="white-space:pre-wrap;line-height:1.8;"><%= note.rawTranscript %></p>
+  <% } else { %>
+    <p class="text-muted"><%= note.status === 'processing' ? '转录中...' : '暂无转录内容' %></p>
+  <% } %>
+</div>
+
+<div class="card mt-2">
+  <h4>🤖 AI 摘要</h4>
+  <% if (note.aiSummary) { %>
+    <p style="white-space:pre-wrap;line-height:1.8;"><%= note.aiSummary %></p>
+  <% } else { %>
+    <p class="text-muted"><%= note.status === 'processing' ? '等待AI处理...' : '暂无摘要' %></p>
+  <% } %>
+</div>
+
+<div class="card mt-2">
+  <h4>📌 考试重点</h4>
+  <% if (note.examPoints) { %>
+    <p style="white-space:pre-wrap;line-height:1.8;"><%= note.examPoints %></p>
+  <% } else { %>
+    <p class="text-muted"><%= note.status === 'processing' ? '等待AI处理...' : '暂无考试重点' %></p>
+  <% } %>
+</div>
+
+<div class="card mt-2">
+  <h4>🧠 思维导图</h4>
+  <% if (note.mindMap) { %>
+    <p style="white-space:pre-wrap;line-height:1.8;"><%= note.mindMap %></p>
+  <% } else { %>
+    <p class="text-muted"><%= note.status === 'processing' ? '等待AI处理...' : '暂无思维导图' %></p>
+  <% } %>
+  <div style="margin-top:16px;">
+    <a href="/notes" class="btn btn-outline btn-sm">← 返回笔记列表</a>
+  </div>
 </div>

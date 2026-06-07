@@ -5,6 +5,39 @@
     <a href="/notes/search" class="btn btn-outline">搜索</a>
   </div>
 </div>
+<% if (notes.length === 0) { %>
 <div class="card mt-2">
   <p class="text-muted text-center">暂无笔记，连接设备开始录音或点击"网页录音"</p>
 </div>
+<% } else { %>
+<div class="note-list mt-2">
+  <% notes.forEach(note => { %>
+  <div class="note-card">
+    <div class="note-card-main">
+      <div class="note-card-title">
+        <a href="/notes/<%= note.id %>"><%= note.title %></a>
+      </div>
+      <div class="note-card-meta">
+        <span><%= new Date(note.createdAt).toLocaleString('zh-CN') %></span>
+        <% if (note.duration) { %>
+          <span><%= (note.duration / 60).toFixed(0) %> 分 <%= note.duration % 60 %> 秒</span>
+        <% } %>
+        <% if (note.tags) { %>
+          <span><%= note.tags %></span>
+        <% } %>
+      </div>
+    </div>
+    <div class="note-card-side">
+      <% if (note.status === 'ready') { %>
+        <span class="tag tag-success">完成</span>
+      <% } else if (note.status === 'processing') { %>
+        <span class="tag tag-warning">处理中</span>
+      <% } else if (note.status === 'failed') { %>
+        <span class="tag tag-error">失败</span>
+      <% } %>
+      <a href="/notes/<%= note.id %>" class="btn btn-outline btn-sm">查看</a>
+    </div>
+  </div>
+  <% }) %>
+</div>
+<% } %>

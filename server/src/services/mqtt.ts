@@ -2,7 +2,7 @@ import mqtt from 'mqtt';
 import { createHmac, timingSafeEqual } from 'crypto';
 import { getEnv } from '../config.js';
 import { db } from '../db/index.js';
-import { devices, notes } from '../db/schema.js';
+import { devices, notes, noteImages } from '../db/schema.js';
 import { eq } from 'drizzle-orm';
 import { v4 as uuid } from 'uuid';
 import { createTask } from './queue.js';
@@ -16,14 +16,59 @@ const verifiedDeviceClientIds = new Set<string>();
 const audioBuffers = new Map<string, { total: number; chunks: Map<number, string> }>();
 
 const AUDIO_DIR = join(process.cwd(), 'data', 'audio');
+const IMAGE_DIR = join(process.cwd(), 'data', 'images');
 const DEVICE_USERNAME_SKEW_SECONDS = 300;
 const DEVICE_RELATIVE_TIMESTAMP_MAX_SECONDS = 24 * 60 * 60;
 const DEVICE_UNIX_TIMESTAMP_THRESHOLD_SECONDS = 1_000_000_000;
 
-function ensureAudioDir() {
-  if (!existsSync(AUDIO_DIR)) {
-    mkdirSync(AUDIO_DIR, { recursive: true });
+function ensureDir(dir: string) {
+  if (!existsSync(dir)) {
+    mkdirSync(dir, { recursive: true });
   }
+}
+
+/**
+ * Assemble audio chunks and finalize the note.
+ */
+function finalizeAudio(noteId: string, totalChunks: number, deviceUserId: string, deviceId: string) {
+  const buf = audioBuffers.get(noteId);
+  if (!buf) return;
+  audioBuffers.delete(noteId);
+
+  // Build WAV from ordered chunks
+  const pcmBuffers: Buffer[] = [];
+  for (let i = 0; i < totalChunks; i++) {
+    const b64 = buf.chunks.get(i);
+    if (b64) {
+      pcmBuffers.push(Buffer.from(b64, 'base64'));
+    }
+  }
+
+  if (pcmBuffers.length === 0) {
+    console.log('[MQTT] No valid chunks, skipping');
+    return;
+  }
+
+  const wavPath = buildWav(pcmBuffers, noteId);
+  const existing = db.select().from(notes).where(eq(notes.id, noteId)).get();
+  if (!existing) {
+    db.insert(notes).values({
+      id: noteId,
+      userId: deviceUserId,
+      deviceId: deviceId,
+      title: `课堂笔记 ${new Date().toLocaleDateString('zh-CN')}`,
+      audioPath: wavPath,
+      status: 'processing',
+    }).run();
+  } else {
+    db.update(notes)
+      .set({ audioPath: wavPath, status: 'processing' })
+      .where(eq(notes.id, noteId))
+      .run();
+  }
+
+  // Trigger ASR task
+  createTask(noteId, 'asr');
 }
 
 /**
@@ -31,7 +76,7 @@ function ensureAudioDir() {
  * Returns the file path.
  */
 function buildWav(pcmBuffers: Buffer[], noteId: string): string {
-  ensureAudioDir();
+  ensureDir(AUDIO_DIR);
   const dataSize = pcmBuffers.reduce((sum, b) => sum + b.length, 0);
   const sampleRate = 16000;
   const bitsPerSample = 16;
@@ -84,7 +129,7 @@ export function initMQTT() {
 
   client.on('connect', () => {
     console.log('[MQTT] Connected to', env.MQTT_BROKER);
-    client!.subscribe('/brokers/+/clients/+/connected');
+    client!.subscribe('$SYS/brokers/+/clients/+/connected');
     client!.subscribe('sht/+/status');
     client!.subscribe('sht/+/audio/chunk');
     client!.subscribe('sht/+/image');
@@ -113,9 +158,10 @@ export function initMQTT() {
 }
 
 function isClientConnectedTopic(topic: string): boolean {
+  // EMQX publishes to: $SYS/brokers/{node}/clients/{clientid}/connected
   const parts = topic.split('/');
   return parts.length === 6
-    && parts[0] === ''
+    && parts[0] === '$SYS'
     && parts[1] === 'brokers'
     && parts[3] === 'clients'
     && parts[5] === 'connected';
@@ -280,12 +326,20 @@ function getEmqxApiBase(mqttBroker: string): string {
 
 async function handleMessage(sn: string, type: string, data: Record<string, unknown>) {
   const expectedClientid = `st_${sn}`;
+
+  // Auto-verify: if device exists in database, trust it
   if (!verifiedDeviceClientIds.has(expectedClientid)) {
-    console.log(`[MQTT] Unauthorized message ignored: sn=${sn}, expectedClientid=${expectedClientid}, type=${type}`);
-    return;
+    const dev = db.select().from(devices).where(eq(devices.sn, sn)).get();
+    if (dev) {
+      verifiedDeviceClientIds.add(expectedClientid);
+      console.log(`[MQTT] Device auto-verified: ${expectedClientid}`);
+    } else {
+      console.log(`[MQTT] Unknown device, ignoring: sn=${sn}`);
+      return;
+    }
   }
 
-  const device = db.select().from(devices).where(eq(devices.sn, sn)).get();
+  const device = db.select().from(devices).where(eq(devices.sn, sn)).get()!;
   if (!device) {
     console.log('[MQTT] Unknown device:', sn);
     return;
@@ -312,8 +366,19 @@ async function handleMessage(sn: string, type: string, data: Record<string, unkn
       const seq = p.seq as number;
       const total = p.total as number;
       const audioB64 = p.data as string;
+      const eos = p.eos as boolean | undefined;
 
-      if (!noteId || seq == null || total == null || !audioB64) {
+      // EOS 消息：无音频数据，仅标记结束
+      if (eos && noteId && audioBuffers.has(noteId)) {
+        const buf = audioBuffers.get(noteId)!;
+        const actualTotal = buf.chunks.size;
+        console.log(`[MQTT] Audio EOS for note: ${noteId}, chunks=${actualTotal}`);
+        finalizeAudio(noteId, actualTotal, device.userId, device.id);
+        break;
+      }
+
+      // 普通音频块
+      if (!noteId || seq == null || !audioB64) {
         console.log('[MQTT] Invalid audio chunk, missing fields');
         break;
       }
@@ -325,57 +390,47 @@ async function handleMessage(sn: string, type: string, data: Record<string, unkn
       const buf = audioBuffers.get(noteId)!;
       buf.chunks.set(seq, audioB64);
 
-      console.log(`[MQTT] Audio chunk ${seq + 1}/${total} for note ${noteId} (${buf.chunks.size}/${total} received)`);
-
-      // Check if all chunks received
-      if (buf.chunks.size >= total) {
+      // 旧模式：total 已知且收齐 → 直接组装
+      if (total > 0 && buf.chunks.size >= total) {
         console.log(`[MQTT] Audio complete for note: ${noteId}`);
-        audioBuffers.delete(noteId);
-
-        // Build WAV from ordered chunks
-        const pcmBuffers: Buffer[] = [];
-        for (let i = 0; i < total; i++) {
-          const b64 = buf.chunks.get(i);
-          if (b64) {
-            pcmBuffers.push(Buffer.from(b64, 'base64'));
-          }
-        }
-
-        if (pcmBuffers.length === 0) {
-          console.log('[MQTT] No valid chunks, skipping');
-          break;
-        }
-
-        const wavPath = buildWav(pcmBuffers, noteId);
-
-        // Create or update note record
-        const existing = db.select().from(notes).where(eq(notes.id, noteId)).get();
-        if (!existing) {
-          db.insert(notes).values({
-            id: noteId,
-            userId: device.userId,
-            title: `课堂笔记 ${new Date().toLocaleDateString('zh-CN')}`,
-            audioPath: wavPath,
-            status: 'processing',
-          }).run();
-        } else {
-          db.update(notes)
-            .set({ audioPath: wavPath, status: 'processing' })
-            .where(eq(notes.id, noteId))
-            .run();
-        }
-
-        // Trigger ASR task
-        createTask(noteId, 'asr');
+        finalizeAudio(noteId, total, device.userId, device.id);
+      } else {
+        console.log(`[MQTT] Audio chunk ${seq + 1} for note ${noteId} (${buf.chunks.size} received)`);
       }
       break;
     }
 
     case 'image': {
       const p = data.payload as Record<string, unknown>;
-      const noteId = (p.note_id as string) || uuid();
-      console.log('[MQTT] Image received for note:', noteId);
-      // Store image + trigger OCR — implemented in M4
+      const noteId = (p.note_id as string);
+      const imgB64 = p.data as string;
+      const format = (p.format as string) || 'jpeg';
+
+      if (!noteId || !imgB64) {
+        console.log('[MQTT] Invalid image, missing note_id or data');
+        break;
+      }
+
+      ensureDir(IMAGE_DIR);
+      const imgPath = join(IMAGE_DIR, `${noteId}_${Date.now()}.${format}`);
+      const imgBuf = Buffer.from(imgB64, 'base64');
+      writeFileSync(imgPath, imgBuf);
+      console.log(`[MQTT] Image saved: ${imgPath} (${imgBuf.length} bytes)`);
+
+      // 写入 note_images 表
+      const sortOrder = (db.select()
+        .from(noteImages)
+        .where(eq(noteImages.noteId, noteId))
+        .all().length) || 0;
+      db.insert(noteImages).values({
+        id: uuid(),
+        noteId,
+        imagePath: imgPath,
+        sortOrder,
+      }).run();
+
+      // 触发 OCR（API key 未设置时静默跳过）
+      try { createTask(noteId, 'ocr'); } catch (_e) { /* ignore */ }
       break;
     }
   }

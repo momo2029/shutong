@@ -8,6 +8,24 @@ import { signJWT } from '../utils/jwt.js';
 const WX_BASE = 'https://wx.3198.net';
 const app = new Hono();
 
+// POST /api/auth/login — email + password login (for admin/dev use)
+app.post('/login', async (c) => {
+  const { email, password } = await c.req.json<{ email: string; password: string }>();
+  if (!email || !password) return c.json({ error: '缺少邮箱或密码' }, 400);
+
+  const u = db.select().from(users).where(eq(users.email, email)).get();
+  if (!u) return c.json({ error: '用户不存在' }, 404);
+
+  const bcrypt = await import('bcryptjs');
+  if (!bcrypt.compareSync(password, u.passwordHash)) {
+    return c.json({ error: '密码错误' }, 401);
+  }
+
+  const token = await signJWT({ sub: u.id });
+  c.header('Set-Cookie', `token=${token}; HttpOnly; Secure; Path=/; Max-Age=604800; SameSite=Lax`);
+  return c.json({ ok: true, user: { id: u.id, email: u.email, nickname: u.nickname, plan: u.plan } });
+});
+
 // POST /api/auth/wechat/qrcode — proxy to WeChat auth service
 app.post('/wechat/qrcode', async (c) => {
   const form = new URLSearchParams();

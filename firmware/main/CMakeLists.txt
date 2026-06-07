@@ -14,6 +14,7 @@ idf_component_register(
         shutong_sdcard
         shutong_audio
         shutong_speaker
+        shutong_detect
         78__esp-wifi-connect
         espressif__button
         esp_http_server

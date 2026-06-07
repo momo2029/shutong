@@ -37,6 +37,7 @@ raw.exec(`
   CREATE TABLE IF NOT EXISTS notes (
     id TEXT PRIMARY KEY,
     user_id TEXT NOT NULL REFERENCES users(id),
+    device_id TEXT REFERENCES devices(id),
     course_id TEXT REFERENCES courses(id) ON DELETE SET NULL,
     title TEXT NOT NULL DEFAULT '',
     raw_transcript TEXT NOT NULL DEFAULT '',
@@ -95,5 +96,13 @@ raw.exec(`
     updated_at TEXT NOT NULL DEFAULT (datetime('now'))
   );
 `);
+
+// 兼容迁移：已有数据库添加 device_id 列（SQLite 无 IF NOT EXISTS，忽略重复错误）
+try {
+  raw.exec(`ALTER TABLE notes ADD COLUMN device_id TEXT REFERENCES devices(id);`);
+  console.log('Migration: added device_id column to notes');
+} catch (_e) {
+  // column already exists, ignore
+}
 
 console.log('Migration done: all tables created');

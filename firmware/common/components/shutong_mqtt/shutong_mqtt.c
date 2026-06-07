@@ -1,5 +1,4 @@
 #include "shutong_mqtt.h"
-#include "hmac_util.h"
 
 #include "esp_log.h"
 #include "nvs_flash.h"
@@ -14,7 +13,7 @@ static esp_mqtt_client_handle_t s_client = NULL;
 static char s_sn[32];
 static mqtt_cmd_cb_t s_cmd_cb = NULL;
 static bool s_connected = false;
-static const time_t MQTT_VALID_UNIX_TIME_SECONDS = 1577836800; // 2020-01-01
+
 
 #ifndef CONFIG_MQTT_USERNAME
 #define CONFIG_MQTT_USERNAME "st_device"
@@ -79,7 +78,7 @@ static void mqtt_event_handler(void *arg, esp_event_base_t base, int32_t id, voi
           // Forward to callback for other commands
           if (s_cmd_cb) {
             cJSON *id = cJSON_GetObjectItem(json, "msg_id");
-            s_cmd_cb(type->valuestring, id ? id->valuestring : "");
+            s_cmd_cb(type->valuestring, payload, id ? id->valuestring : "");
           }
         }
         cJSON_Delete(json);
@@ -115,46 +114,20 @@ bool shutong_mqtt_init(const char *sn, const char *broker_url, mqtt_cmd_cb_t cmd
     nvs_close(nvs_h);
   }
 
+  // Auth strategy:
+  // 1. If NVS has personalized credentials → use them directly
+  // 2. Otherwise → use fixed default username/password (st_device)
+  //    Server will detect this and send personalized credentials via
+  //    update_credentials command, which saves to NVS and reboots.
+  //    Dynamic auth (timestamp+HMAC) is NOT used for initial connection
+  //    because EMQX's built-in database doesn't support dynamic usernames.
   const char *username = use_nvs_creds ? nvs_username : CONFIG_MQTT_USERNAME;
   const char *mqtt_password = use_nvs_creds ? nvs_password : CONFIG_MQTT_PASSWORD;
 
-  char dynamic_username[128];
-  char payload[128];
-  char signature[45];
-
-  if (CONFIG_MQTT_MASTER_KEY[0] != '\0') {
-    time_t timestamp = (time_t)(esp_log_timestamp() / 1000);
-    time_t unix_time = time(NULL);
-    if (unix_time > MQTT_VALID_UNIX_TIME_SECONDS) {
-      timestamp = unix_time;
-      ESP_LOGI(TAG, "Using unix timestamp for MQTT auth: %lld", (long long)timestamp);
-    } else {
-      ESP_LOGI(TAG, "Using uptime timestamp for MQTT auth: %lld", (long long)timestamp);
-    }
-
-    int payload_len = snprintf(payload, sizeof(payload), "st_device|%lld|%s",
-                               (long long)timestamp, device_sn);
-    if (payload_len > 0 && payload_len < (int)sizeof(payload)) {
-      hmac_sha256_b64(CONFIG_MQTT_MASTER_KEY, payload, signature, sizeof(signature));
-      if (signature[0] != '\0') {
-        int username_len = snprintf(dynamic_username, sizeof(dynamic_username),
-                                    "st_device:%lld:%s", (long long)timestamp,
-                                    signature);
-        if (username_len > 0 && username_len < (int)sizeof(dynamic_username)) {
-          username = dynamic_username;
-          ESP_LOGI(TAG, "Generated dynamic MQTT username, ts=%lld",
-                   (long long)timestamp);
-        } else {
-          ESP_LOGI(TAG, "Dynamic MQTT username too long, using fallback username");
-        }
-      } else {
-        ESP_LOGI(TAG, "MQTT auth signature failed, using fallback username");
-      }
-    } else {
-      ESP_LOGI(TAG, "MQTT auth payload too long, using fallback username");
-    }
+  if (use_nvs_creds) {
+    ESP_LOGI(TAG, "Using personalized MQTT credentials: %s", username);
   } else {
-    ESP_LOGI(TAG, "MQTT master key is empty, using fallback username");
+    ESP_LOGI(TAG, "Using default MQTT credentials: %s", username);
   }
 
   char client_id[48];

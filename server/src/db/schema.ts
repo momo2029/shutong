@@ -36,6 +36,7 @@ export const courses = sqliteTable('courses', {
 export const notes = sqliteTable('notes', {
   id: text('id').primaryKey(),
   userId: text('user_id').notNull().references(() => users.id),
+  deviceId: text('device_id').references(() => devices.id),
   courseId: text('course_id').references(() => courses.id, { onDelete: 'set null' }),
   title: text('title').notNull().default(''),
   rawTranscript: text('raw_transcript').notNull().default(''),

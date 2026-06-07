@@ -1,0 +1,123 @@
+<div class="device-detail-header">
+  <span class="status-dot <%= device.online ? 'dot-online' : 'dot-offline' %>"></span>
+  <div>
+    <h1 class="device-detail-name"><%= device.name %></h1>
+    <span class="device-detail-sn"><%= device.sn %></span>
+  </div>
+  <div style="margin-left:auto;display:flex;gap:8px;align-items:center;">
+    <span class="tag <%= device.type === 'flagship' ? 'tag-flagship' : 'tag-standard' %>">
+      <%= device.type === 'flagship' ? '旗舰版' : '标准版' %>
+    </span>
+    <span class="tag <%= device.online ? 'tag-success' : 'tag-error' %>">
+      <%= device.online ? '在线' : '离线' %>
+    </span>
+  </div>
+</div>
+
+<div class="card">
+  <h3 style="margin-bottom:16px;">设备信息</h3>
+  <div class="device-meta-grid">
+    <div class="meta-item">
+      <span class="meta-label">状态</span>
+      <span class="meta-value" style="color:<%= device.online ? '#22c55e' : '#9ca3af' %>">
+        <%= device.online ? '在线' : '离线' %>
+      </span>
+    </div>
+    <div class="meta-item">
+      <span class="meta-label">固件版本</span>
+      <span class="meta-value"><%= device.firmwareVersion || '—' %></span>
+    </div>
+    <div class="meta-item">
+      <span class="meta-label">最后在线</span>
+      <span class="meta-value"><%= device.lastSeen ? new Date(device.lastSeen).toLocaleString('zh-CN') : '—' %></span>
+    </div>
+    <div class="meta-item">
+      <span class="meta-label">序列号</span>
+      <span class="meta-value mono"><%= device.sn %></span>
+    </div>
+  </div>
+</div>
+
+<div class="card">
+  <h3 style="margin-bottom:16px;">下发命令</h3>
+  <div class="cmd-panel">
+    <button class="cmd-btn primary" data-cmd="record_start" <%= !device.online ? 'disabled' : '' %>>
+      ⏺ 开始录音
+    </button>
+    <button class="cmd-btn" data-cmd="record_stop" <%= !device.online ? 'disabled' : '' %>>
+      ⏹ 停止录音
+    </button>
+    <button class="cmd-btn" data-cmd="capture" <%= !device.online ? 'disabled' : '' %>>
+      📷 拍照
+    </button>
+    <button class="cmd-btn danger" data-cmd="ota" <%= !device.online ? 'disabled' : '' %>>
+      🔄 OTA 升级
+    </button>
+  </div>
+</div>
+
+<div class="card">
+  <h3 style="margin-bottom:16px;">录音记录</h3>
+  <% if (notes.length === 0) { %>
+    <div class="note-empty">
+      <p>暂无录音记录</p>
+      <p class="text-muted">设备录音后会自动出现在这里</p>
+    </div>
+  <% } else { %>
+    <div class="note-list">
+      <% notes.forEach(note => { %>
+      <div class="note-card">
+        <div class="note-card-main">
+          <div class="note-card-title">
+            <a href="/notes/<%= note.id %>"><%= note.title %></a>
+          </div>
+          <div class="note-card-meta">
+            <span><%= new Date(note.createdAt).toLocaleString('zh-CN') %></span>
+            <% if (note.duration) { %>
+              <span><%= (note.duration / 60).toFixed(0) %> 分 <%= note.duration % 60 %> 秒</span>
+            <% } %>
+          </div>
+        </div>
+        <div class="note-card-side">
+          <% if (note.status === 'ready') { %>
+            <span class="tag tag-success">完成</span>
+          <% } else if (note.status === 'processing') { %>
+            <span class="tag tag-warning">处理中</span>
+          <% } else if (note.status === 'failed') { %>
+            <span class="tag tag-error">失败</span>
+          <% } %>
+          <a href="/notes/<%= note.id %>" class="btn btn-outline btn-sm">查看</a>
+        </div>
+      </div>
+      <% }) %>
+    </div>
+  <% } %>
+</div>
+
+<script>
+document.querySelectorAll('.cmd-btn[data-cmd]').forEach(btn => {
+  btn.addEventListener('click', async () => {
+    const cmd = btn.dataset.cmd;
+    btn.disabled = true;
+    btn.textContent = '发送中…';
+    try {
+      const res = await fetch('/api/devices/<%= device.id %>/cmd', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ cmd, params: {} }),
+      });
+      const data = await res.json();
+      if (data.ok) {
+        btn.textContent = '✅ 已发送';
+        setTimeout(() => { btn.textContent = cmd === 'record_start' ? '⏺ 开始录音' : cmd === 'record_stop' ? '⏹ 停止录音' : cmd === 'capture' ? '📷 拍照' : '🔄 OTA 升级'; btn.disabled = false; }, 2000);
+      } else {
+        btn.textContent = '❌ ' + (data.error || '失败');
+        setTimeout(() => { btn.textContent = cmd === 'record_start' ? '⏺ 开始录音' : cmd === 'record_stop' ? '⏹ 停止录音' : cmd === 'capture' ? '📷 拍照' : '🔄 OTA 升级'; btn.disabled = false; }, 2000);
+      }
+    } catch(e) {
+      btn.textContent = '❌ 请求失败';
+      setTimeout(() => { btn.textContent = cmd === 'record_start' ? '⏺ 开始录音' : cmd === 'record_stop' ? '⏹ 停止录音' : cmd === 'capture' ? '📷 拍照' : '🔄 OTA 升级'; btn.disabled = false; }, 2000);
+    }
+  });
+});
+</script>

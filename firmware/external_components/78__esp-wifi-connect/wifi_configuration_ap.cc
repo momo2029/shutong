@@ -3,6 +3,7 @@
 #include <memory>
 #include <freertos/FreeRTOS.h>
 #include <freertos/event_groups.h>
+#include <esp_idf_version.h>
 #include <esp_err.h>
 #include <esp_event.h>
 #include <esp_wifi.h>
@@ -14,12 +15,16 @@
 #include <nvs_flash.h>
 #include <cJSON.h>
 #include <esp_smartconfig.h>
+#include <esp_timer.h>
 #include "ssid_manager.h"
 
 #define TAG "WifiConfigurationAp"
 
 #define WIFI_CONNECTED_BIT BIT0
 #define WIFI_FAIL_BIT      BIT1
+
+// Delayed reboot callback (used after WiFi config is saved)
+static void do_reboot(void*) { esp_restart(); }
 
 extern const char index_html_start[] asm("_binary_wifi_configuration_html_start");
 extern const char done_html_start[] asm("_binary_wifi_configuration_done_html_start");
@@ -164,10 +169,14 @@ void WifiConfigurationAp::StartAccessPoint()
     ESP_ERROR_CHECK(esp_wifi_set_ps(WIFI_PS_NONE));
     ESP_ERROR_CHECK(esp_wifi_start());
 
-#ifdef CONFIG_SOC_WIFI_SUPPORT_5G
-    ESP_ERROR_CHECK(esp_wifi_set_band_mode(WIFI_BAND_MODE_AUTO));
+#if ESP_IDF_VERSION_MAJOR >= 5
+    // IDF 5.x drops esp_wifi_set_band_mode
 #else
-    ESP_ERROR_CHECK(esp_wifi_set_band_mode(WIFI_BAND_MODE_2G_ONLY));
+    #ifdef CONFIG_SOC_WIFI_SUPPORT_5G
+        ESP_ERROR_CHECK(esp_wifi_set_band_mode(WIFI_BAND_MODE_AUTO));
+    #else
+        ESP_ERROR_CHECK(esp_wifi_set_band_mode(WIFI_BAND_MODE_2G_ONLY));
+    #endif
 #endif
 
     ESP_LOGI(TAG, "Access Point started with SSID %s", ssid.c_str());
@@ -414,6 +423,20 @@ void WifiConfigurationAp::StartWebServer()
             httpd_resp_set_type(req, "application/json");
             httpd_resp_set_hdr(req, "Connection", "close");
             httpd_resp_send(req, "{\"success\":true}", HTTPD_RESP_USE_STRLEN);
+
+            // 延迟500ms重启
+            esp_timer_create_args_t timer_args = {
+                .callback = do_reboot,
+                .arg = NULL,
+                .dispatch_method = ESP_TIMER_TASK,
+                .name = "reboot_timer",
+                .skip_unhandled_events = false
+            };
+            esp_timer_handle_t reboot_timer;
+            if (esp_timer_create(&timer_args, &reboot_timer) == ESP_OK) {
+                esp_timer_start_once(reboot_timer, 500000);
+            }
+
             return ESP_OK;
         },
         .user_ctx = this
