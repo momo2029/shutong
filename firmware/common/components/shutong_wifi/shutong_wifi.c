@@ -5,6 +5,7 @@
 #include "nvs_flash.h"
 #include "freertos/event_groups.h"
 #include "lwip/sockets.h"
+#include "cJSON.h"
 #include <string.h>
 
 static const char *TAG = "sht-wifi";
@@ -13,6 +14,9 @@ static bool s_connected = false;
 static char s_ip[16] = {0};
 static int s_rssi = 0;
 static int s_dns_fd = -1;
+
+// Global scan cache populated by shutong_wifi_start_ap() before switching to AP mode
+cJSON *s_prov_scan_cache = NULL;
 
 // Pending connect pattern (producer-consumer, avoids event loop deadlock)
 static volatile bool s_connect_pending = false;
@@ -183,11 +187,35 @@ static void dns_server_task(void *arg) {
 }
 
 void shutong_wifi_start_ap(void) {
-  // AP+STA dual mode so scan works during provisioning
-  esp_netif_create_default_wifi_ap();
-  esp_netif_create_default_wifi_sta();
+  // Scan nearby APs while WiFi is still stopped (mode preserved as STA)
+  wifi_ap_record_t s_scan_aps[32];
+  uint16_t s_scan_count = 32;
 
-  wifi_config_t cfg = {
+  esp_wifi_set_mode(WIFI_MODE_STA);
+  esp_wifi_start();
+  // Will stop and restart in AP mode below, so just scan briefly
+  wifi_scan_config_t scan_cfg = { .show_hidden = false, .scan_type = WIFI_SCAN_TYPE_ACTIVE };
+  esp_wifi_scan_start(&scan_cfg, true);
+  esp_wifi_scan_get_ap_records(&s_scan_count, s_scan_aps);
+  esp_wifi_stop();
+
+  // Build cached scan results for provisioning server
+  extern cJSON *s_prov_scan_cache;
+  if (s_prov_scan_cache) cJSON_Delete(s_prov_scan_cache);
+  s_prov_scan_cache = cJSON_CreateArray();
+  for (int i = 0; i < s_scan_count; i++) {
+    if (strlen((char *)s_scan_aps[i].ssid) == 0) continue;
+    cJSON *o = cJSON_CreateObject();
+    cJSON_AddStringToObject(o, "ssid", (char *)s_scan_aps[i].ssid);
+    cJSON_AddNumberToObject(o, "rssi", s_scan_aps[i].rssi);
+    cJSON_AddBoolToObject(o, "secure", s_scan_aps[i].authmode != WIFI_AUTH_OPEN);
+    cJSON_AddItemToArray(s_prov_scan_cache, o);
+  }
+
+  // Now switch to pure AP mode
+  esp_netif_t *ap_netif = esp_netif_create_default_wifi_ap();
+  esp_wifi_set_mode(WIFI_MODE_AP);
+  wifi_config_t ap_cfg = {
     .ap = {
       .ssid = "shutong-Setup",
       .ssid_len = 0,
@@ -197,10 +225,10 @@ void shutong_wifi_start_ap(void) {
       .max_connection = 4,
     },
   };
-  esp_wifi_set_mode(WIFI_MODE_APSTA);
-  esp_wifi_set_config(WIFI_IF_AP, &cfg);
+  esp_wifi_set_config(WIFI_IF_AP, &ap_cfg);
   esp_wifi_start();
   ESP_LOGI(TAG, "AP: shutong-Setup (open)");
+
 
   // Start DNS server for captive portal (192.168.4.1)
   esp_netif_t *ap_nf = esp_netif_get_handle_from_ifkey("WIFI_AP_DEF");

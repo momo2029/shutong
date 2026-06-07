@@ -273,28 +273,18 @@ static esp_err_t prov_redirect_handler(httpd_req_t *req) {
 }
 
 static esp_err_t prov_scan_handler(httpd_req_t *req) {
-  wifi_scan_config_t scan_cfg = { .show_hidden = false, .scan_type = WIFI_SCAN_TYPE_ACTIVE };
-  esp_wifi_scan_start(&scan_cfg, true);
-  uint16_t count = 0;
-  esp_wifi_scan_get_ap_num(&count);
-  wifi_ap_record_t *aps = calloc(count, sizeof(wifi_ap_record_t));
-  esp_wifi_scan_get_ap_records(&count, aps);
+  extern cJSON *s_prov_scan_cache;
 
-  cJSON *arr = cJSON_CreateArray();
-  for (int i = 0; i < count; i++) {
-    if (strlen((char *)aps[i].ssid) == 0) continue; // skip hidden APs
-    cJSON *o = cJSON_CreateObject();
-    cJSON_AddStringToObject(o, "ssid", (char *)aps[i].ssid);
-    cJSON_AddNumberToObject(o, "rssi", aps[i].rssi);
-    cJSON_AddBoolToObject(o, "secure", aps[i].authmode != WIFI_AUTH_OPEN);
-    cJSON_AddItemToArray(arr, o);
+  if (!s_prov_scan_cache) {
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_sendstr(req, "[]");
+    return ESP_OK;
   }
-  free(aps);
-  char *js = cJSON_PrintUnformatted(arr);
+
+  char *js = cJSON_PrintUnformatted(s_prov_scan_cache);
   httpd_resp_set_type(req, "application/json");
   httpd_resp_send(req, js, HTTPD_RESP_USE_STRLEN);
   cJSON_free(js);
-  cJSON_Delete(arr);
   return ESP_OK;
 }
 
