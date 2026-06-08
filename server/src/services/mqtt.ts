@@ -4,12 +4,13 @@ import { getEnv } from '../config.js';
 import { raw, db } from '../db/index.js';
 import { devices, notes, noteImages } from '../db/schema.js';
 import { eq } from 'drizzle-orm';
-import { v4 as uuid } from 'uuid';
+import { snowflake } from '../utils/snowflake.js';
 import { createTask } from './queue.js';
 import { writeFileSync, mkdirSync, existsSync, readFileSync, rmSync, readdirSync, unlinkSync } from 'fs';
 import { join } from 'path';
 import { uploadFile } from './storage.js';
 import { transcribe } from './asr.js';
+import { createShortLink } from './shortlink.js';
 
 let client: mqtt.MqttClient | null = null;
 const verifiedDeviceClientIds = new Set<string>();
@@ -341,7 +342,7 @@ function verifyDeviceUsername(username: string | undefined, clientid: string): {
     }
   }
 
-  const masterKey = process.env.DEVICE_MASTER_KEY || '';
+  const masterKey = getEnv().DEVICE_MASTER_KEY;
   if (!masterKey) {
     return { ok: false, reason: 'missing_device_master_key' };
   }
@@ -371,8 +372,8 @@ async function disconnectClient(clientid: string): Promise<{ ok: true } | { ok: 
   const env = getEnv();
   const apiBase = getEmqxApiBase(env.MQTT_BROKER);
   const url = `${apiBase}/api/v5/clients/${encodeURIComponent(clientid)}`;
-  const apiUser = process.env.EMQX_API_USER || process.env.EMQX_API_KEY || '';
-  const apiPassword = process.env.EMQX_API_PASSWORD || process.env.EMQX_API_SECRET || '';
+  const apiUser = env.EMQX_API_USER;
+  const apiPassword = env.EMQX_API_PASSWORD;
 
   if (!apiUser || !apiPassword) {
     console.warn('[MQTT] Cannot disconnect client via EMQX API: missing EMQX_API_USER/PASSWORD or EMQX_API_KEY/SECRET');
@@ -402,15 +403,16 @@ async function disconnectClient(clientid: string): Promise<{ ok: true } | { ok: 
 }
 
 function getEmqxApiBase(mqttBroker: string): string {
-  if (process.env.EMQX_API_URL) {
-    return process.env.EMQX_API_URL.replace(/\/$/, '');
+  const env = getEnv();
+  if (env.EMQX_API_URL) {
+    return env.EMQX_API_URL.replace(/\/$/, '');
   }
 
   try {
     const url = new URL(mqttBroker);
     const isTls = url.protocol === 'mqtts:';
     url.protocol = isTls ? 'https:' : 'http:';
-    url.port = process.env.EMQX_API_PORT || (isTls ? '8083' : '18083');
+    url.port = env.EMQX_API_PORT || (isTls ? '8083' : '18083');
     url.username = '';
     url.password = '';
     url.pathname = '';
@@ -498,6 +500,11 @@ async function handleMessage(sn: string, type: string, data: Record<string, unkn
             status: 'recording',
             createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(),
           }).run();
+          // 生成短链推送到设备 BLE 广播
+          const noteUrl = `https://shutong.3198.net/r/${device.sn}?note=${noteId}`;
+          createShortLink(noteUrl).then(shortUrl => {
+            publishBleUrl(device.sn, shortUrl).catch(() => {});
+          }).catch(() => {});
         } else if (existing.status !== 'recording') {
           db.update(notes).set({ status: 'recording', updatedAt: new Date().toISOString() }).where(eq(notes.id, noteId)).run();
         }
@@ -560,7 +567,7 @@ async function handleMessage(sn: string, type: string, data: Record<string, unkn
           .where(eq(noteImages.noteId, noteId))
           .all().length) || 0;
         db.insert(noteImages).values({
-          id: uuid(), noteId,
+          id: snowflake(), noteId,
           imagePath: imgKey, sortOrder,
           createdAt: new Date().toISOString(),
         }).run();
@@ -578,8 +585,8 @@ async function createEmqxUser(username: string, password: string): Promise<boole
   const env = getEnv();
   const apiBase = getEmqxApiBase(env.MQTT_BROKER);
   const url = `${apiBase}/api/v5/authentication/password_based:built_in_database/users`;
-  const apiUser = process.env.EMQX_API_USER || process.env.EMQX_API_KEY || '';
-  const apiPassword = process.env.EMQX_API_PASSWORD || process.env.EMQX_API_SECRET || '';
+  const apiUser = env.EMQX_API_USER;
+  const apiPassword = env.EMQX_API_PASSWORD;
 
   if (!apiUser || !apiPassword) {
     console.warn('[MQTT] Cannot create EMQX user: missing API credentials');
@@ -615,7 +622,7 @@ async function createEmqxUser(username: string, password: string): Promise<boole
 async function sendPersonalizedCredentials(sn: string) {
   if (!client) throw new Error('MQTT not connected');
 
-  const masterKey = process.env.DEVICE_MASTER_KEY;
+  const masterKey = getEnv().DEVICE_MASTER_KEY;
   if (!masterKey) {
     console.error('[MQTT] DEVICE_MASTER_KEY not set, cannot issue credentials');
     return;
@@ -636,7 +643,7 @@ async function sendPersonalizedCredentials(sn: string) {
   }
 
   const msg = {
-    msg_id: uuid(),
+    msg_id: snowflake(),
     ts: Math.floor(Date.now() / 1000),
     type: 'update_credentials',
     username,
@@ -651,13 +658,26 @@ export async function publishCommand(sn: string, cmd: string, params: Record<str
   if (!client) throw new Error('MQTT not connected');
 
   const msg = {
-    msg_id: uuid(),
+    msg_id: snowflake(),
     ts: Math.floor(Date.now() / 1000),
     type: 'cmd',
     payload: { cmd, params },
   };
 
   client.publish(`sht/${sn}/cmd`, JSON.stringify(msg), { qos: 1 });
+}
+
+/** 推送 BLE 广播短链接到设备 */
+export async function publishBleUrl(sn: string, shortUrl: string) {
+  if (!client) return;
+  const msg = {
+    msg_id: snowflake(),
+    ts: Math.floor(Date.now() / 1000),
+    type: 'ble_url',
+    payload: { url: shortUrl },
+  };
+  client.publish(`sht/${sn}/cmd`, JSON.stringify(msg), { qos: 1 });
+  console.log(`[MQTT] Pushed BLE URL to ${sn}: ${shortUrl}`);
 }
 
 /** 标记笔记正在被用户查看（前端轮询调用） */
