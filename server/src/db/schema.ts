@@ -5,6 +5,7 @@ export const users = sqliteTable('users', {
   email: text('email').notNull().unique(),
   passwordHash: text('password_hash').notNull(),
   nickname: text('nickname').notNull().default(''),
+  role: text('role').notNull().default('user'), // user | admin
   plan: text('plan').notNull().default('free'), // free | member
   storageUsed: integer('storage_used').notNull().default(0),
   storageLimit: integer('storage_limit').notNull().default(524288000), // 500MB
@@ -21,6 +22,7 @@ export const devices = sqliteTable('devices', {
   firmwareVersion: text('firmware_version').notNull().default('1.0.0'),
   online: integer('online').notNull().default(0),
   lastSeen: text('last_seen'),
+  shortUrl: text('short_url').notNull().default(''),
   createdAt: text('created_at').notNull().default("(datetime('now'))"),
 });
 
@@ -86,6 +88,18 @@ export const aiTasks = sqliteTable('ai_tasks', {
   taskType: text('task_type').notNull(), // asr | ocr | summary | exam_points | mind_map
   status: text('status').notNull().default('pending'), // pending | running | done | failed
   errorMsg: text('error_msg').notNull().default(''),
+  retryCount: integer('retry_count').notNull().default(0),
+  maxRetries: integer('max_retries').notNull().default(3),
   createdAt: text('created_at').notNull().default("(datetime('now'))"),
   updatedAt: text('updated_at').notNull().default("(datetime('now'))"),
+});
+
+export const revisionLogs = sqliteTable('revision_logs', {
+  id: text('id').primaryKey(),
+  noteId: text('note_id').notNull().references(() => notes.id, { onDelete: 'cascade' }),
+  oldText: text('old_text').notNull().default(''),
+  newText: text('new_text').notNull().default(''),
+  stage: text('stage').notNull().default(''), // 'asr' | 'polish_chunk' | 'polish_final'
+  charsChanged: integer('chars_changed').notNull().default(0),
+  createdAt: text('created_at').notNull().default("(datetime('now'))"),
 });

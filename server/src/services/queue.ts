@@ -287,8 +287,24 @@ export async function processQueue() {
         db.update(notes).set({ status: 'ready', updatedAt: new Date().toISOString() }).where(eq(notes.id, note.id)).run();
       }
     } catch (e: unknown) {
-      updateTask(task.id, 'failed', (e as Error).message);
-      db.update(notes).set({ status: 'failed' }).where(eq(notes.id, task.noteId)).run();
+      const errMsg = (e as Error).message;
+      // 重试逻辑：retryCount < maxRetries 则重试
+      if (task.retryCount < task.maxRetries) {
+        db.update(aiTasks)
+          .set({
+            retryCount: task.retryCount + 1,
+            status: 'pending',
+            errorMsg: errMsg,
+            updatedAt: new Date().toISOString()
+          })
+          .where(eq(aiTasks.id, task.id))
+          .run();
+        console.log(`[Queue] Task ${task.id} failed, retry ${task.retryCount + 1}/${task.maxRetries}: ${errMsg}`);
+      } else {
+        updateTask(task.id, 'failed', errMsg);
+        db.update(notes).set({ status: 'failed' }).where(eq(notes.id, task.noteId)).run();
+        console.log(`[Queue] Task ${task.id} failed permanently: ${errMsg}`);
+      }
     }
   }
 }
@@ -393,4 +409,27 @@ async function generateTitle(summary: string): Promise<string> {
   return data.choices?.[0]?.message?.content?.trim().replace(/^["'「『《]|['"」』》]$/g, '').replace(/\*\*/g, '') || '';
 }
 
-setInterval(processQueue, 10000);
+// 恢复 stuck running 任务（进程 crash 残留）
+const stuckTasks = db.select().from(aiTasks).where(eq(aiTasks.status, 'running')).all();
+if (stuckTasks.length > 0) {
+  console.log(`[Queue] Recovering ${stuckTasks.length} stuck tasks`);
+  for (const t of stuckTasks) {
+    updateTask(t.id, 'pending');
+  }
+}
+
+// 并发保护的轮询
+let processing = false;
+async function poll() {
+  if (processing) return;
+  processing = true;
+  try {
+    await processQueue();
+  } catch (e) {
+    console.error('[Queue] Poll error:', (e as Error).message);
+  } finally {
+    processing = false;
+    setTimeout(poll, 10000);
+  }
+}
+poll();
