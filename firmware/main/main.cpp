@@ -479,29 +479,28 @@ extern "C" void app_main(void) {
 
   // WiFi
   auto &ssid_mgr = SsidManager::GetInstance();
-  auto ssid_list = ssid_mgr.GetSsidList();
   auto &station = WifiStation::GetInstance();
+  auto &ap = WifiConfigurationAp::GetInstance();
 
-  if (!ssid_list.empty()) {
-    station.Start();
-    if (station.WaitForConnected(15000)) {
-      ESP_LOGI(TAG, "WiFi connected: %s", station.GetSsid().c_str());
-    } else {
-      ESP_LOGW(TAG, "Saved WiFi failed, starting AP mode...");
+  while (true) {
+    auto ssid_list = ssid_mgr.GetSsidList();
+    if (!ssid_list.empty()) {
+      station.Start();
+      if (station.WaitForConnected(15000)) {
+        ESP_LOGI(TAG, "WiFi connected: %s", station.GetSsid().c_str());
+        break;
+      }
+      ESP_LOGW(TAG, "Saved WiFi failed, opening AP for 60s...");
       station.Stop();
-      auto &ap = WifiConfigurationAp::GetInstance();
-      ap.SetSsidPrefix("shutong");
-      ap.Start();
-      ESP_LOGI(TAG, "AP mode: SSID=%s, URL=%s", ap.GetSsid().c_str(), ap.GetWebServerUrl().c_str());
-      while (1) vTaskDelay(pdMS_TO_TICKS(1000));
+    } else {
+      ESP_LOGW(TAG, "No saved WiFi, opening AP for 60s...");
     }
-  } else {
-    ESP_LOGW(TAG, "No saved WiFi, starting AP mode...");
-    auto &ap = WifiConfigurationAp::GetInstance();
+
     ap.SetSsidPrefix("shutong");
     ap.Start();
     ESP_LOGI(TAG, "AP mode: SSID=%s, URL=%s", ap.GetSsid().c_str(), ap.GetWebServerUrl().c_str());
-    while (1) vTaskDelay(pdMS_TO_TICKS(1000));
+    vTaskDelay(pdMS_TO_TICKS(60000));
+    ap.Stop();
   }
 
   // MQTT 初始化
