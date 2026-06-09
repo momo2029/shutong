@@ -8,6 +8,7 @@ set(EXTRA_COMPONENT_DIRS
     ${CMAKE_SOURCE_DIR}/common/components/shutong_sdcard
     ${CMAKE_SOURCE_DIR}/common/components/shutong_audio
     ${CMAKE_SOURCE_DIR}/common/components/shutong_speaker
+    ${CMAKE_SOURCE_DIR}/common/components/shutong_ble
     ${CMAKE_SOURCE_DIR}/common/components/shutong_detect
     ${CMAKE_SOURCE_DIR}/external_components/78__esp-wifi-connect
     ${CMAKE_SOURCE_DIR}/external_components/espressif__button

@@ -16,7 +16,7 @@ export const authMiddleware = createMiddleware<{ Variables: Vars }>(async (c, ne
     if (!u) return c.json({ error: 'User not found' }, 401);
     c.set('user', {
       id: u.id, email: u.email, nickname: u.nickname,
-      plan: u.plan, storageUsed: u.storageUsed, storageLimit: u.storageLimit,
+      role: u.role, plan: u.plan, storageUsed: u.storageUsed, storageLimit: u.storageLimit,
     });
     await next();
   } catch {

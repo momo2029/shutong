@@ -2,7 +2,7 @@ import { Hono } from 'hono';
 import { db } from '../db/index.js';
 import { users } from '../db/schema.js';
 import { eq } from 'drizzle-orm';
-import { v4 as uuid } from 'uuid';
+import { snowflake } from '../utils/snowflake.js';
 import { signJWT } from '../utils/jwt.js';
 
 const WX_BASE = 'https://wx.3198.net';
@@ -23,7 +23,7 @@ app.post('/login', async (c) => {
 
   const token = await signJWT({ sub: u.id });
   c.header('Set-Cookie', `token=${token}; HttpOnly; Secure; Path=/; Max-Age=604800; SameSite=Lax`);
-  return c.json({ ok: true, user: { id: u.id, email: u.email, nickname: u.nickname, plan: u.plan } });
+  return c.json({ ok: true, user: { id: u.id, email: u.email, nickname: u.nickname, role: u.role, plan: u.plan } });
 });
 
 // POST /api/auth/wechat/qrcode — proxy to WeChat auth service
@@ -64,12 +64,15 @@ app.post('/wechat/verify', async (c) => {
   let user = db.select().from(users).where(eq(users.email, email)).get();
 
   if (!user) {
-    const id = uuid();
+    // 第一个扫码登录的用户 = 管理员
+    const isFirst = db.select().from(users).all().length === 0;
+    const id = snowflake();
     db.insert(users).values({
       id,
       email,
       passwordHash: '',
       nickname: `用户${data.openid.slice(-6)}`,
+      role: isFirst ? 'admin' : 'user',
     }).run();
     user = db.select().from(users).where(eq(users.id, id)).get()!;
   }
@@ -96,7 +99,7 @@ app.get('/me', async (c) => {
     const payload = await verifyJWT(match[1]);
     const u = db.select().from(users).where(eq(users.id, payload.sub as string)).get();
     if (!u) return c.json({ user: null });
-    return c.json({ user: { id: u.id, email: u.email, nickname: u.nickname, plan: u.plan } });
+    return c.json({ user: { id: u.id, email: u.email, nickname: u.nickname, role: u.role, plan: u.plan } });
   } catch {
     return c.json({ user: null });
   }

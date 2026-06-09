@@ -2,7 +2,7 @@ import { Hono } from 'hono';
 import { db } from '../db/index.js';
 import { courses } from '../db/schema.js';
 import { eq, and } from 'drizzle-orm';
-import { v4 as uuid } from 'uuid';
+import { snowflake } from '../utils/snowflake.js';
 import { authMiddleware } from '../middleware/auth.js';
 import type { Vars } from '../app.js';
 
@@ -27,7 +27,7 @@ app.post('/', async (c) => {
   const semester = body.semester as string | undefined;
   const description = body.description as string | undefined;
   if (!name) return c.json({ error: '课程名称不能为空' }, 400);
-  const id = uuid();
+  const id = snowflake();
   db.insert(courses).values({ id, userId: c.var.user.id, name, semester: semester || '', description: description || '' }).run();
   return c.json({ ok: true, id });
 });

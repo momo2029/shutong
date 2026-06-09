@@ -1,0 +1,11 @@
+<h2>📡 <%= deviceName || ('房间 ' + sn) %></h2>
+<div class="card mt-2" style="text-align:center;padding:40px;">
+  <div style="font-size:48px;margin-bottom:16px;">🎙️</div>
+  <h3>暂无语记</h3>
+  <p class="text-muted">设备在线但还没有开始录音。</p>
+  <p class="text-muted">录音会自动开始（VAD 语音检测），请稍等片刻。</p>
+  <p class="text-muted" style="margin-top:8px;font-size:12px;">页面每 10 秒自动刷新</p>
+</div>
+<script>
+setTimeout(() => { window.location.reload(); }, 10000);
+</script>

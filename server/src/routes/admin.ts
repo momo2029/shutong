@@ -3,7 +3,7 @@ import { raw, db } from '../db/index.js';
 import { authMiddleware } from '../middleware/auth.js';
 import { users, firmware } from '../db/schema.js';
 import { eq } from 'drizzle-orm';
-import { v4 as uuid } from 'uuid';
+import { snowflake } from '../utils/snowflake.js';
 import type { Vars } from '../app.js';
 
 const app = new Hono<{ Variables: Vars }>();
@@ -11,7 +11,7 @@ const app = new Hono<{ Variables: Vars }>();
 app.use('*', authMiddleware);
 
 app.use('*', async (c, next) => {
-  if (c.var.user.email !== 'admin@shutong.app') return c.json({ error: 'Forbidden' }, 403);
+  if (c.var.user.role !== 'admin') return c.json({ error: 'Forbidden' }, 403);
   await next();
 });
 
@@ -49,7 +49,7 @@ app.post('/firmware', async (c) => {
   const changelog = form.get('changelog') as string || '';
   if (!file || !version || !deviceType) return c.json({ error: '缺少必要参数' }, 400);
 
-  const id = uuid();
+  const id = snowflake();
   const key = `firmware/${deviceType}_${version}.bin`;
   const { uploadFile } = await import('../services/storage.js');
   const { key: savedKey } = await uploadFile(key, Buffer.from(await file.arrayBuffer()));

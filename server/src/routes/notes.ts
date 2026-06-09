@@ -1,8 +1,8 @@
 import { Hono } from 'hono';
 import { raw, db } from '../db/index.js';
-import { notes, noteImages, devices } from '../db/schema.js';
+import { notes, noteImages, devices, aiTasks } from '../db/schema.js';
 import { eq, and, like } from 'drizzle-orm';
-import { v4 as uuid } from 'uuid';
+import { snowflake } from '../utils/snowflake.js';
 import { authMiddleware } from '../middleware/auth.js';
 import { createTask } from '../services/queue.js';
 import { markNoteViewed, publishCommand } from '../services/mqtt.js';
@@ -93,25 +93,101 @@ app.get('/:id', (c) => {
   if (!note) return c.json({ error: '笔记不存在' }, 404);
   const images = db.select().from(noteImages).where(eq(noteImages.noteId, c.req.param('id'))).all();
   const tasks = raw.prepare('SELECT * FROM ai_tasks WHERE note_id = ?').all(c.req.param('id'));
-  return c.json({ note, images, tasks });
+  const revisions = raw.prepare('SELECT * FROM revision_logs WHERE note_id = ? ORDER BY created_at ASC').all(c.req.param('id'));
+  return c.json({ note, images, tasks, revisions });
 });
 
 app.post('/', async (c) => {
+  const contentType = c.req.header('Content-Type') || '';
+
+  // JSON body: 无音频创建笔记（录音开始即创建，后续分块上传）
+  if (contentType.includes('application/json')) {
+    const body = await c.req.json() as { title?: string };
+    const noteId = snowflake();
+    const title = body.title || '网页录音笔记';
+    const now = new Date().toISOString();
+    db.insert(notes).values({ id: noteId, userId: c.var.user.id, title, status: 'processing', createdAt: now }).run();
+    createTask(noteId, 'asr');
+    return c.json({ ok: true, id: noteId });
+  }
+
+  // FormData: 完整音频上传（停止录音时）
   const form = await c.req.formData();
   const file = form.get('audio') as File | null;
   const title = form.get('title') as string || '网页录音笔记';
   const courseId = form.get('courseId') as string || null;
+  const transcript = form.get('transcript') as string || '';
   if (!file) return c.json({ error: '未上传音频' }, 400);
 
-  const noteId = uuid();
+  const noteId = snowflake();
   const key = `audio/${c.var.user.id}/${noteId}.webm`;
   const { uploadFile } = await import('../services/storage.js');
   const buffer = Buffer.from(await file.arrayBuffer());
-  const { key: savedKey } = await uploadFile(key, buffer);
 
-  db.insert(notes).values({ id: noteId, userId: c.var.user.id, courseId, title, audioPath: savedKey, status: 'processing' }).run();
+  // 浏览器录音：本地保存一份供 ASR 使用（跳过空文件）
+  const { mkdirSync } = await import('fs');
+  const localAudioDir = `data/audio`;
+  mkdirSync(localAudioDir, { recursive: true });
+  const localPath = `data/audio/${noteId}.webm`;
+  if (buffer.length > 0) {
+    (await import('fs')).writeFileSync(localPath, buffer);
+    uploadFile(key, buffer).catch(e => console.error('[Notes] Upload failed:', (e as Error).message));
+  }
+  const savedKey = buffer.length > 0 ? localPath : ''; // 空文件不设 audioPath
+
+  const now = new Date().toISOString();
+  // 有浏览器转录 → 写入但不重复创建 ASR 任务
+  if (transcript.trim()) {
+    db.insert(notes).values({
+      id: noteId, userId: c.var.user.id, courseId, title, audioPath: savedKey,
+      rawTranscript: transcript, status: 'processing', createdAt: now,
+    }).run();
+  } else {
+    db.insert(notes).values({ id: noteId, userId: c.var.user.id, courseId, title, audioPath: savedKey, status: 'processing', createdAt: now }).run();
+  }
+  // ASR 任务（下游 summary/exam_points/mind_map 由 queue 在 ASR 完成后自动创建）
   createTask(noteId, 'asr');
   return c.json({ ok: true, id: noteId });
+});
+
+// 自动分块上传（每 1 分钟一段）
+app.post('/:id/chunk', async (c) => {
+  const noteId = c.req.param('id');
+  const note = db.select().from(notes).where(and(eq(notes.id, noteId), eq(notes.userId, c.var.user.id))).get();
+  if (!note) return c.json({ error: '笔记不存在' }, 404);
+
+  const form = await c.req.formData();
+  const file = form.get('audio') as File | null;
+  const transcript = form.get('transcript') as string || '';
+  const chunkIdx = parseInt(form.get('chunk') as string || '1');
+
+  // 追加音频 chunk（保存到本地供后续完整 ASR）
+  if (file) {
+    const { appendFileSync, mkdirSync } = await import('fs');
+    const chunkDir = `data/chunks/${noteId}`;
+    mkdirSync(chunkDir, { recursive: true });
+    const chunkPath = `${chunkDir}/chunk_${chunkIdx}.webm`;
+    appendFileSync(chunkPath, Buffer.from(await file.arrayBuffer()));
+  }
+
+  // 更新转写文字（用最新的全量转录覆盖）
+  if (transcript.trim()) {
+    db.update(notes)
+      .set({ rawTranscript: transcript, updatedAt: new Date().toISOString() })
+      .where(eq(notes.id, noteId))
+      .run();
+
+    // 重新排队润色任务（只排队一次，不重复）
+    const hasPendingPolish = db.select().from(aiTasks)
+      .where(eq(aiTasks.noteId, noteId))
+      .all()
+      .some(t => t.taskType === 'asr' && (t.status === 'pending' || t.status === 'running'));
+    if (!hasPendingPolish) {
+      createTask(noteId, 'asr');
+    }
+  }
+
+  return c.json({ ok: true, chunk: chunkIdx });
 });
 
 app.delete('/:id', async (c) => {

@@ -1,21 +1,3 @@
-import { db } from './index.js';
-import { users } from './schema.js';
-import { v4 as uuid } from 'uuid';
-import bcrypt from 'bcryptjs';
-
-// Create tables if not exist via drizzle's push strategy — run migrations for prod
-const seed = async () => {
-  const id = uuid();
-  const hash = await bcrypt.hash('admin123', 10);
-  db.insert(users).values({
-    id,
-    email: 'admin@shutong.app',
-    passwordHash: hash,
-    nickname: 'Admin',
-    plan: 'member',
-    storageLimit: 10737418240, // 10GB
-  }).run();
-  console.log('Seed done: admin@shutong.app / admin123');
-};
-
-seed();
+// Seed 仅用于确保数据库已初始化（表由 db/index.ts 自动创建）
+// 没有预设用户，第一个扫码登录的用户自动成为管理员
+console.log('Seed: database ready, waiting for first user (who will be admin)');

@@ -25,6 +25,7 @@ extern "C" {
 #include "shutong_sdcard.h"
 #include "shutong_proto.h"
 #include "shutong_mqtt.h"
+#include "shutong_ble.h"
 #include "shutong_camera.h"
 #include "shutong_detect.h"
 }
@@ -409,6 +410,18 @@ static void on_mqtt_cmd(const char *type, const char *payload_json, const char *
 
     cJSON_Delete(json);
   }
+
+  // 短链接推送（服务器用 hq8.net 生成的短 URL）
+  if (strcmp(type, "ble_url") == 0 && payload_json) {
+    cJSON *json = cJSON_Parse(payload_json);
+    if (json) {
+      cJSON *url = cJSON_GetObjectItem(json, "url");
+      if (url && url->valuestring) {
+        shutong_ble_set_url(url->valuestring);
+      }
+      cJSON_Delete(json);
+    }
+  }
 }
 
 // ─── 主入口 ─────────────────────────────────────────────
@@ -505,6 +518,9 @@ extern "C" void app_main(void) {
 
   // MQTT 初始化
   shutong_mqtt_init(CONFIG_SHUTONG_SN, CONFIG_MQTT_BROKER_URL, on_mqtt_cmd);
+
+  // BLE 广播 — 等服务器推送短链后开始广播
+  shutong_ble_init();
 
   // 启动任务
   xTaskCreate(heartbeat_task, "hb", 2048, NULL, 1, NULL);

@@ -1,0 +1,62 @@
+<div style="background:#4f46e5;color:#fff;padding:12px 16px;border-radius:8px 8px 0 0;display:flex;align-items:center;gap:8px;">
+  <span style="font-size:20px;">📡</span>
+  <div>
+    <div style="font-weight:600;"><%= deviceName || ('房间 ' + sn) %></div>
+    <div style="font-size:12px;opacity:0.8;">Bluetooth 近距离连接 · 实时课堂笔记</div>
+  </div>
+  <% if (note.status === 'recording') { %>
+    <span style="margin-left:auto;background:#22c55e;color:#fff;padding:2px 8px;border-radius:99px;font-size:12px;">● 直播中</span>
+  <% } %>
+</div>
+
+<div class="card" style="border-radius:0 0 8px 8px;">
+  <div class="note-card-meta" style="margin-bottom:12px;">
+    <span><%= note.createdAt && note.createdAt[0] !== '(' ? new Date(new Date(note.createdAt).getTime() + 8*3600000).toISOString().replace('T',' ').substring(0,19) : '未知' %></span>
+    <% if (note.duration) { %><span>⏱ <%= (note.duration / 60).toFixed(0) %> 分 <%= note.duration % 60 %> 秒</span><% } %>
+  </div>
+
+  <% if (note.aiSummary) { %>
+  <div class="card mt-2">
+    <h4>🤖 AI 摘要</h4>
+    <div class="md-body"><%- note.aiSummaryHtml %></div>
+  </div>
+  <% } %>
+
+  <% if (note.examPoints) { %>
+  <div class="card mt-2">
+    <h4>📌 重点</h4>
+    <div class="md-body"><%- note.examPointsHtml %></div>
+  </div>
+  <% } %>
+
+  <% if (note.rawTranscript) { %>
+  <div class="card mt-2">
+    <h4>📝 转录文字</h4>
+    <div class="md-body" style="max-height:400px;overflow-y:auto;white-space:pre-wrap;font-size:14px;line-height:1.7;"><%= note.rawTranscript %></div>
+  </div>
+  <% } %>
+
+  <% if (images && images.length > 0) { %>
+  <div style="margin-top:16px;">
+    <h4 style="margin-bottom:8px;">📷 课堂照片</h4>
+    <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:8px;">
+      <% images.forEach(img => { %>
+      <a href="<%= img.imagePath %>" target="_blank">
+        <img src="<%= img.imagePath %>" style="width:100%;height:150px;object-fit:cover;border-radius:6px;border:1px solid var(--border);" loading="lazy">
+      </a>
+      <% }) %>
+    </div>
+  </div>
+  <% } %>
+
+  <p class="text-muted" style="margin-top:24px;font-size:12px;text-align:center;">
+    由 <a href="/" style="color:var(--primary);">书童</a> 自动生成 · <%= note.status === 'recording' ? '每15秒自动刷新' : '' %>
+  </p>
+</div>
+
+<% if (note.status === 'recording') { %>
+<script>
+// 自动刷新（录制中每 15 秒）
+setTimeout(() => { window.location.reload(); }, 15000);
+</script>
+<% } %>

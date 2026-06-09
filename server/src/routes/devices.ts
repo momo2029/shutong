@@ -2,7 +2,7 @@ import { Hono } from 'hono';
 import { db } from '../db/index.js';
 import { devices } from '../db/schema.js';
 import { eq, and } from 'drizzle-orm';
-import { v4 as uuid } from 'uuid';
+import { snowflake } from '../utils/snowflake.js';
 import { authMiddleware } from '../middleware/auth.js';
 import type { Vars } from '../app.js';
 
@@ -22,7 +22,7 @@ app.post('/bind', async (c) => {
   if (!sn || sn.length < 4) return c.json({ error: '无效的设备序列号' }, 400);
   if (db.select().from(devices).where(eq(devices.sn, sn)).get()) return c.json({ error: '该设备已被绑定' }, 409);
 
-  const id = uuid();
+  const id = snowflake();
   db.insert(devices).values({ id, sn, userId: c.var.user.id, name: name || `设备-${sn.slice(-6)}`, type: 'standard' }).run();
   return c.json({ ok: true, id });
 });

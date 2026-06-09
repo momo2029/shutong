@@ -72,7 +72,7 @@ bool shutong_audio_has_voice(const int16_t *buf, int samples) {
   for (int i = 0; i < samples; i++) {
     sum += buf[i] >= 0 ? buf[i] : -buf[i];
   }
-  return (sum / samples) > 500;
+  return (sum / samples) > 800;
 }
 
 size_t shutong_audio_buffer_available(void) {
