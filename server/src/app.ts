@@ -245,6 +245,7 @@ app.get('/r/:sn', async (c) => {
   return c.var.render('room/view.ejs', { title: activeNote.title, sn, deviceName: device.name, note: noteWithHtml, images: imagesWithUrls });
 });
 app.get('/knowledge/ask', async (c) => c.var.render('knowledge/ask.ejs', { title: '知识库问答' }));
+app.get('/offline', async (c) => c.var.render('offline.ejs', { title: '离线' }));
 app.get('/admin', async (c) => c.var.render('admin/index.ejs', { title: '管理后台' }));
 app.get('/admin/users', async (c) => c.var.render('admin/users.ejs', { title: '用户管理' }));
 app.get('/admin/firmware', async (c) => c.var.render('admin/firmware.ejs', { title: '固件管理' }));

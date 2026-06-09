@@ -17,7 +17,17 @@
   <script src="/public/js/app.js"></script>
   <script>
     if ('serviceWorker' in navigator) {
-      navigator.serviceWorker.register('/public/sw.js');
+      navigator.serviceWorker.register('/public/sw.js').then(reg => {
+        reg.addEventListener('updatefound', () => {
+          const installing = reg.installing;
+          if (!installing) return;
+          installing.addEventListener('statechange', () => {
+            if (installing.state === 'installed' && navigator.serviceWorker.controller) {
+              if (window.showToast) window.showToast('新版本已可用，关闭标签页后重新打开即可', 'info', 6000);
+            }
+          });
+        });
+      });
     }
   </script>
 </body>
