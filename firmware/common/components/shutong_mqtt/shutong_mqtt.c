@@ -40,9 +40,10 @@ static char *build_topic(const char *suffix) {
 
 static void reconnect_task(void *arg) {
   int attempt = s_reconnect_attempt;
-  int delay = (1 << (attempt > 6 ? 6 : attempt)) * 1000;
+  int exp = attempt > 1 ? attempt - 1 : 0;
+  int delay = (1 << (exp > 6 ? 6 : exp)) * 1000;
   if (delay > RECONNECT_MAX_BACKOFF) delay = RECONNECT_MAX_BACKOFF;
-  ESP_LOGI(TAG, "Reconnect attempt %d in %dms", attempt + 1, delay);
+  ESP_LOGI(TAG, "Reconnect attempt %d in %dms", attempt, delay);
   vTaskDelay(pdMS_TO_TICKS(delay));
   s_reconnect_scheduled = false;
   if (s_client && !s_connected) {

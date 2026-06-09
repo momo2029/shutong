@@ -37,6 +37,7 @@ app.post('/tts', async (c) => {
   }
 
   if (dev) {
+    if (pcm.length > 128 * 1024) return c.json({ error: '语音过长，设备无法播放' }, 400);
     const { publishCommand } = await import('../services/mqtt.js');
     await publishCommand(dev.sn, 'tts_play', { codec: 'pcm_s16le', sample_rate: 16000, data: pcm.toString('base64') });
     return c.json({ ok: true });

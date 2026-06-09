@@ -16,7 +16,8 @@ export function rateLimit(maxRequests: number, windowMs: number) {
   }, 300000);
 
   return createMiddleware(async (c, next) => {
-    const key = c.req.header('x-forwarded-for') || c.req.header('x-real-ip') || 'unknown';
+    const forwardedFor = c.req.header('x-forwarded-for')?.split(',')[0]?.trim();
+    const key = forwardedFor || c.req.header('x-real-ip') || 'unknown';
     const now = Date.now();
     let bucket = buckets.get(key);
 
