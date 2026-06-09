@@ -10,8 +10,12 @@ import { serve } from '@hono/node-server';
 import app from './app.js';
 import { getEnv } from './config.js';
 import { initMQTT } from './services/mqtt.js';
+import { rateLimit } from './middleware/rateLimit.js';
 
 const env = getEnv();
+
+// Global rate limiting: 100 requests per minute per IP
+app.use('/api/*', rateLimit(100, 60000));
 
 // Mount API routes
 const { default: auth } = await import('./routes/auth.js');
