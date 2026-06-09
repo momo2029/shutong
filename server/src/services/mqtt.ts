@@ -680,6 +680,10 @@ export async function publishBleUrl(sn: string, shortUrl: string) {
   console.log(`[MQTT] Pushed BLE URL to ${sn}: ${shortUrl}`);
 }
 
+export function isMqttConnected() {
+  return !!client?.connected;
+}
+
 /** 标记笔记正在被用户查看（前端轮询调用） */
 export function markNoteViewed(noteId: string) {
   viewingNotes.set(noteId, Date.now());

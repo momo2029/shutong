@@ -9,11 +9,44 @@ process.on('uncaughtException', (err) => {
 import { serve } from '@hono/node-server';
 import app from './app.js';
 import { getEnv } from './config.js';
-import { initMQTT } from './services/mqtt.js';
+import { initMQTT, isMqttConnected } from './services/mqtt.js';
 import { rateLimit } from './middleware/rateLimit.js';
 import { logger, errorFields } from './utils/logger.js';
+import { raw } from './db/index.js';
+import { mkdirSync, writeFileSync, unlinkSync } from 'fs';
+import { join } from 'path';
 
 const env = getEnv();
+
+app.get('/health', (c) => {
+  const checks: Record<string, { ok: boolean; error?: string }> = {
+    db: { ok: true },
+    mqtt: { ok: true },
+    disk: { ok: true },
+  };
+
+  try {
+    raw.prepare('SELECT 1').get();
+  } catch (e) {
+    checks.db = { ok: false, error: (e as Error).message };
+  }
+
+  checks.mqtt.ok = isMqttConnected();
+  if (!checks.mqtt.ok) checks.mqtt.error = 'not connected';
+
+  try {
+    const dir = join(process.cwd(), 'data');
+    mkdirSync(dir, { recursive: true });
+    const path = join(dir, '.healthcheck');
+    writeFileSync(path, String(Date.now()));
+    unlinkSync(path);
+  } catch (e) {
+    checks.disk = { ok: false, error: (e as Error).message };
+  }
+
+  const ok = Object.values(checks).every(check => check.ok);
+  return c.json({ status: ok ? 'ok' : 'degraded', checks, uptime: process.uptime(), memory: process.memoryUsage() }, ok ? 200 : 503);
+});
 
 // Global rate limiting: 100 requests per minute per IP
 app.use('/api/*', rateLimit(100, 60000));
