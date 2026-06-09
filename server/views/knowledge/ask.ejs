@@ -30,7 +30,7 @@ document.getElementById('askForm').addEventListener('submit', async (e) => {
     document.getElementById('answerContent').textContent = data.answer || data.error || '无回答';
     document.getElementById('answer').style.display = '';
   } catch (err) {
-    alert('请求失败: ' + err.message);
+    showToast('请求失败: ' + err.message, 'error');
   } finally {
     btn.disabled = false; btn.textContent = '提问';
   }

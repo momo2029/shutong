@@ -17,3 +17,6 @@
     </div>
   </div>
 </header>
+<% if (typeof flash !== 'undefined' && flash) { %>
+  <div id="flashData" data-type="<%= flash.type || 'info' %>" data-message="<%= flash.message || '' %>" hidden></div>
+<% } %>

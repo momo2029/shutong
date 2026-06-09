@@ -42,7 +42,7 @@ async function toggleRecord() {
       document.getElementById('timer').textContent = `${m}:${s}`;
     }, 1000);
   } catch (e) {
-    alert('无法访问麦克风: ' + e.message);
+    showToast('无法访问麦克风: ' + e.message, 'error');
   }
 }
 
@@ -55,7 +55,7 @@ function stopRecord() {
 }
 
 async function uploadAudio() {
-  if (!window._audioBlob) return alert('请先录音');
+  if (!window._audioBlob) return showToast('请先录音', 'warning');
   const title = document.getElementById('title').value || '网页录音笔记';
   const form = new FormData();
   form.append('audio', window._audioBlob, 'recording.webm');
@@ -67,9 +67,9 @@ async function uploadAudio() {
     if (data.ok) {
       window.location.href = '/notes/' + data.id;
     } else {
-      alert('上传失败: ' + (data.error || '未知错误'));
+      showToast('上传失败: ' + (data.error || '未知错误'), 'error');
     }
   } catch (e) {
-    alert('上传失败: ' + e.message);
+    showToast('上传失败: ' + e.message, 'error');
   }
 }

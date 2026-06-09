@@ -1,22 +1,444 @@
 <h2>网页录音</h2>
-<div class="card mt-2 text-center" style="padding:40px;">
-  <div id="recorder">
-    <p class="text-muted mb-2">使用浏览器麦克风录制课堂音频</p>
-    <button id="startBtn" class="btn btn-primary" style="font-size:18px;padding:12px 32px;" onclick="toggleRecord()">
-      开始录音
+
+<div class="card mt-2" id="recorder">
+  <!-- 录音控制栏 -->
+  <div style="display:flex;align-items:center;gap:12px;margin-bottom:16px;flex-wrap:wrap;">
+    <button id="startBtn" class="btn btn-primary" style="font-size:16px;padding:10px 28px;" onclick="toggleRecord()">
+      🎙 开始录音
     </button>
-    <p id="timer" class="text-muted mt-2" style="font-size:24px;">00:00</p>
-    <audio id="preview" controls style="display:none;margin-top:16px;width:100%"></audio>
-    <div id="uploadArea" style="display:none;margin-top:16px;">
-      <div class="form-group">
-        <label>笔记标题</label>
-        <input type="text" id="title" class="form-input" placeholder="输入标题">
-      </div>
-      <button class="btn btn-primary" onclick="uploadAudio()">上传并生成笔记</button>
+    <span id="timer" style="font-size:22px;font-family:monospace;color:var(--text-muted);">00:00</span>
+    <span id="srBadge" style="display:none;font-size:12px;background:#22c55e;color:#fff;padding:2px 8px;border-radius:99px;">实时识别</span>
+    <span id="chunkBadge" style="display:none;font-size:12px;background:#8b5cf6;color:#fff;padding:2px 8px;border-radius:99px;">第1段已保存</span>
+  </div>
+
+  <!-- 提示 → 5 秒后自动消失 -->
+  <div id="recHint" style="margin-bottom:12px;padding:8px 12px;background:#fef3c7;border-radius:6px;font-size:13px;color:#92400e;">
+    💡 每说满 1 分钟自动保存，服务端大模型会持续优化识别结果。仅支持普通话。
+  </div>
+  <div id="polishHint" style="display:none;margin-bottom:12px;padding:6px 12px;background:#dbeafe;border-radius:6px;font-size:12px;color:#1e40af;transition:opacity 1s;">
+    ✨ 服务端正在用大模型优化识别结果……
+  </div>
+
+  <!-- 转录区域 -->
+  <div>
+    <div style="font-size:13px;color:var(--text-muted);margin-bottom:4px;font-weight:600;">📝 转录文字 <span style="font-weight:400;font-size:11px;">（双击文字可修改）</span></div>
+    <div id="transcriptArea" contenteditable="false" style="min-height:240px;max-height:400px;overflow-y:auto;background:#f8fafc;border-radius:8px;padding:12px;font-size:14px;line-height:1.8;white-space:pre-wrap;border:1px solid var(--border);outline:none;">
+      <p class="text-muted" id="transcriptPlaceholder">点击"开始录音"，说话内容实时显示在这里。</p>
     </div>
   </div>
+
+  <!-- 停止后的操作 -->
+  <div id="uploadArea" style="display:none;margin-top:12px;padding-top:12px;border-top:1px solid var(--border);">
+    <div style="display:flex;gap:8px;align-items:center;">
+      <a id="noteLink" href="#" class="btn btn-primary" style="display:none;">📝 查看笔记</a>
+      <button class="btn btn-outline" onclick="resetRecorder()">🔄 重新录音</button>
+    </div>
+    <audio id="preview" controls style="display:none;margin-top:12px;width:100%;"></audio>
+  </div>
 </div>
+
 <% if (!user) { %>
 <script>window.location.href='/auth/login';</script>
 <% } %>
-<script src="/public/js/recorder.js"></script>
+
+<script>
+// ═══════════════════════════════════════════════════════
+//  自动分块录音：实时识别 + 自动保存 + 服务端润色
+// ═══════════════════════════════════════════════════════
+
+let mediaRecorder = null;
+let audioChunks = [];
+let lastSaveAudioIdx = 0;
+let timerInterval = null;
+let startTime = 0;
+let timestampedTranscript = ''; // 带时间戳的完整文本
+let textSinceTimestamp = '';   // 本次时间戳后新增的文字
+let recognition = null;
+let hasSR = false;
+let srStopping = false;
+let autoSaveTimer = null;
+let noteId = null;
+let chunkIdx = 1;
+let pollTimer = null;
+let lastSaveTime = 0;
+let polishHintTimer = null;
+
+// ─── 时间戳格式化 ───────────────────────────────────
+function formatTS() {
+  const elapsed = Math.floor((Date.now() - startTime) / 1000);
+  const m = String(Math.floor(elapsed / 60)).padStart(2, '0');
+  const s = String(elapsed % 60).padStart(2, '0');
+  return '[' + m + ':' + s + '] ';
+}
+
+// ─── 统一渲染 ────────────────────────────────────
+// interimText: 浏览器暂定文字（灰色显示）
+function renderDisplay(interimText) {
+  if (document.getElementById('transcriptArea').contentEditable === 'true') return;
+  // 去掉空时间戳行
+  let text = timestampedTranscript.replace(/\n\[[\d:]+\]\s*[。，]?\s*\n?/g, '\n').replace(/^\n+/, '');
+  const lines = text.split('\n');
+  let html = '';
+  for (const line of lines) {
+    const m = line.match(/^(\[\d{2}:\d{2}\])\s?(.*)/);
+    if (m) {
+      html += `<span style="color:#6b7280;font-weight:600;">${m[1]}</span> ${escapeHtml(m[2] || '')}<br>`;
+    } else {
+      html += escapeHtml(line) + '<br>';
+    }
+  }
+  if (interimText) {
+    html += '<span style="color:#94a3b8;">' + escapeHtml(interimText) + '</span>';
+  }
+  document.getElementById('transcriptArea').innerHTML = html;
+  document.getElementById('transcriptArea').scrollTop = document.getElementById('transcriptArea').scrollHeight;
+}
+
+function escapeHtml(s) {
+  return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+}
+
+// ─── contentEditable 编辑（双击进入）───────────────
+const transcriptArea = document.getElementById('transcriptArea');
+let editTimer = null;
+
+transcriptArea.addEventListener('dblclick', () => {
+  if (mediaRecorder && mediaRecorder.state === 'recording') return; // 录音中不允许编辑
+  transcriptArea.contentEditable = 'true';
+  transcriptArea.focus();
+  transcriptArea.style.outline = '2px solid #4f46e5';
+  transcriptArea.style.borderRadius = '8px';
+  document.getElementById('recHint').textContent = '💡 编辑模式：修改完后点击空白处退出。切勿全选删除。';
+  document.getElementById('recHint').style.background = '#dbeafe';
+  document.getElementById('recHint').style.color = '#1e40af';
+});
+
+// 点击空白处退出编辑
+transcriptArea.addEventListener('blur', () => {
+  if (transcriptArea.contentEditable === 'true') {
+    transcriptArea.contentEditable = 'false';
+    transcriptArea.style.outline = 'none';
+    // 从 DOM 同步回 transcript
+    let text = '';
+    transcriptArea.childNodes.forEach(node => {
+      if (node.nodeType === 3) { text += node.textContent; }
+      else if (node.nodeName === 'SPAN') { text += node.textContent; }
+      else if (node.nodeName === 'BR') { text += '\n'; }
+    });
+    const clean = text.replace(/\n{3,}/g, '\n\n').trim();
+    timestampedTranscript = clean;
+    textSinceTimestamp = '';
+    document.getElementById('recHint').textContent = '💡 每说满 1 分钟自动保存，服务端大模型会持续优化识别结果。仅支持普通话。';
+    document.getElementById('recHint').style.background = '#fef3c7';
+    document.getElementById('recHint').style.color = '#92400e';
+  }
+});
+
+// 防止全选删除（Ctrl+A / 全选后 Delete）
+transcriptArea.addEventListener('keydown', (e) => {
+  if (e.key === 'Delete' || e.key === 'Backspace') {
+    const sel = window.getSelection();
+    if (sel && sel.toString().length > 200) {
+      e.preventDefault();
+      showToast('请逐段修改，不要一次性删除大量文字。', 'warning');
+    }
+  }
+});
+
+// Esc 退出编辑
+transcriptArea.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape' && transcriptArea.contentEditable === 'true') {
+    transcriptArea.blur();
+  }
+});
+
+// ─── 润色提示 → 5 秒消失 ────────────────────────────
+function showPolishHint() {
+  const h = document.getElementById('polishHint');
+  h.style.display = 'block';
+  h.style.opacity = '1';
+  clearTimeout(polishHintTimer);
+  polishHintTimer = setTimeout(() => {
+    h.style.opacity = '0';
+    setTimeout(() => { h.style.display = 'none'; }, 1000);
+  }, 5000);
+}
+
+// ─── SpeechRecognition ────────────────────────────────
+function createRecognition() {
+  const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+  const r = new SR();
+  r.continuous = true;
+  r.interimResults = true;
+  r.lang = 'cmn-Hans-CN';
+  let interimText = '';
+  let silenceTimer = null;
+
+  function setStatus(msg) {
+    const b = document.getElementById('srBadge');
+    b.textContent = msg;
+    b.style.display = 'inline';
+  }
+
+  function resetSilence() {
+    if (silenceTimer) clearTimeout(silenceTimer);
+    silenceTimer = setTimeout(() => {
+      // 2 秒无新识别 → 补标点 + 分段
+      const t = timestampedTranscript.trimEnd();
+      if (t && !/[。！？\n]$/.test(t)) {
+        timestampedTranscript += '。';
+        renderDisplay('');
+      }
+    }, 2000);
+  }
+
+  r.onresult = (event) => {
+    setStatus('识别中');
+    resetSilence();
+    interimText = '';
+    for (let i = event.resultIndex; i < event.results.length; i++) {
+      const res = event.results[i];
+      if (res.isFinal) {
+        const txt = res[0].transcript;
+        textSinceTimestamp += txt;
+        timestampedTranscript += txt;
+      } else {
+        interimText += res[0].transcript;
+      }
+    }
+    renderDisplay(interimText);
+  };
+
+  r.onspeechstart = () => {
+    setStatus('识别中');
+    resetSilence();
+    // 上次说话结束 + 停顿后再次说话 → 换行 + 时间戳
+    if (textSinceTimestamp.trim()) {
+      if (!/[。！？\n]$/.test(timestampedTranscript.trimEnd())) timestampedTranscript += '。';
+      timestampedTranscript += '\n\n' + formatTS();
+    } else if (!timestampedTranscript) {
+      timestampedTranscript = formatTS();
+    }
+    textSinceTimestamp = '';
+    renderDisplay('');
+  };
+
+  r.onspeechend = () => {
+    // silence timer 负责补标点
+  };
+
+  r.onerror = (e) => {
+    console.warn('[SR]', e.error);
+    if (e.error === 'no-speech') return;
+    if (e.error === 'aborted') return;
+    setStatus('错误:' + e.error);
+  };
+
+  r.onend = () => {
+    setStatus('等待语音');
+    // continuous:true 也会被 Chrome 定期停止，自动重启
+    if (mediaRecorder && mediaRecorder.state === 'recording' && !srStopping) {
+      setTimeout(() => {
+        if (mediaRecorder && mediaRecorder.state === 'recording' && !srStopping) {
+          recognition = createRecognition();
+          try { recognition.start(); } catch(_) {}
+        }
+      }, 300);
+    }
+  };
+
+  return r;
+}
+
+(function checkSR() {
+  if ('SpeechRecognition' in window || 'webkitSpeechRecognition' in window) {
+    hasSR = true;
+    document.getElementById('srBadge').style.display = 'inline';
+  }
+})();
+
+// ─── 自动保存 ──────────────────────────────────────
+function maybeSave() {
+  if (!mediaRecorder || mediaRecorder.state !== 'recording') return;
+  const elapsed = (Date.now() - lastSaveTime) / 1000;
+  if (elapsed >= 60 && textSinceTimestamp.trim().length > 0) {
+    autoSaveChunk();
+  }
+}
+
+async function autoSaveChunk() {
+  if (!mediaRecorder || mediaRecorder.state !== 'recording') return;
+  if (!timestampedTranscript.trim()) return;
+
+  const newChunks = audioChunks.slice(lastSaveAudioIdx);
+  if (newChunks.length === 0) return;
+
+  // 清除空时间戳行后上传
+  const cleanText = timestampedTranscript.replace(/\n\[[\d:]+\]\s*[。，]?\s*\n?/g, '\n').replace(/^\n+/, '').trim();
+
+  const chunkBlob = new Blob(newChunks, { type: 'audio/webm' });
+  const form = new FormData();
+  form.append('audio', chunkBlob, `chunk_${chunkIdx}.webm`);
+  form.append('transcript', cleanText);
+  form.append('chunk', String(chunkIdx));
+
+  lastSaveAudioIdx = audioChunks.length;
+  lastSaveTime = Date.now();
+
+  try {
+    let url = noteId ? '/api/notes/' + noteId + '/chunk' : '/api/notes';
+    const res = await fetch(url, { method: 'POST', body: form });
+    const data = await res.json();
+    if (data.ok) {
+      if (!noteId) noteId = data.id;
+      document.getElementById('chunkBadge').style.display = 'inline';
+      document.getElementById('chunkBadge').style.background = '#8b5cf6';
+      document.getElementById('chunkBadge').textContent = '第' + chunkIdx + '段已保存';
+      chunkIdx++;
+      showPolishHint();
+      if (!pollTimer) startPolling();
+    }
+  } catch(e) {
+    console.warn('Auto-save failed:', e.message);
+  }
+}
+
+// ─── 轮询润色结果 ──────────────────────────────────
+function startPolling() {
+  if (pollTimer) return;
+  pollTimer = setInterval(async () => {
+    if (!noteId) return;
+    try {
+      const res = await fetch('/api/notes/' + noteId);
+      const data = await res.json();
+      if (data.note && data.note.rawTranscript) {
+        const polished = data.note.rawTranscript;
+        const currentRaw = timestampedTranscript.trim();
+        if (polished !== currentRaw && polished.length > currentRaw.length * 0.95) {
+          if (transcriptArea.contentEditable === 'true') return;
+          timestampedTranscript = polished;
+          textSinceTimestamp = '';
+          renderDisplay('');
+          const area = document.getElementById('transcriptArea');
+          area.style.background = '#f0fdf4';
+          area.style.borderColor = '#86efac';
+        }
+      }
+    } catch(_) {}
+  }, 3000);
+}
+
+// ─── 录音控制 ───────────────────────────────────────
+async function toggleRecord() {
+  if (mediaRecorder && mediaRecorder.state === 'recording') {
+    await stopRecord();
+    return;
+  }
+
+  try {
+    // 立即创建笔记，获得 id（不传音频）
+    if (!noteId) {
+      const res = await fetch('/api/notes', { 
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ title: '网页录音笔记' })
+      });
+      const data = await res.json();
+      if (data.ok) {
+        noteId = data.id;
+        history.replaceState({}, '', '/notes/record/' + noteId);
+        if (!pollTimer) startPolling();
+      }
+    }
+
+    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    mediaRecorder = new MediaRecorder(stream, { mimeType: 'audio/webm' });
+    audioChunks = [];
+    lastSaveAudioIdx = 0;
+    lastSaveTime = Date.now();
+
+    mediaRecorder.onstop = async () => {
+      stream.getTracks().forEach(t => t.stop());
+      clearInterval(autoSaveTimer);
+      if (transcriptArea.contentEditable === 'true') transcriptArea.blur();
+      await autoSaveChunk();
+      clearInterval(pollTimer);
+      pollTimer = null;
+      if (noteId) {
+        document.getElementById('noteLink').href = '/notes/' + noteId;
+        document.getElementById('noteLink').style.display = 'inline';
+      }
+      document.getElementById('uploadArea').style.display = 'block';
+    };
+
+    mediaRecorder.ondataavailable = (e) => {
+      if (e.data.size > 0) audioChunks.push(e.data);
+      maybeSave();
+    };
+
+    mediaRecorder.start(3000);
+    autoSaveTimer = setInterval(() => autoSaveChunk(), 60000);
+
+    if (hasSR) {
+      recognition = createRecognition();
+      try { recognition.start(); } catch(_) {}
+    }
+
+    startTime = Date.now();
+    document.getElementById('startBtn').textContent = '⏹ 停止录音';
+    document.getElementById('startBtn').classList.remove('btn-primary');
+    document.getElementById('startBtn').classList.add('btn-danger');
+    document.getElementById('uploadArea').style.display = 'none';
+
+    timerInterval = setInterval(() => {
+      const elapsed = Math.floor((Date.now() - startTime) / 1000);
+      const m = String(Math.floor(elapsed / 60)).padStart(2, '0');
+      const s = String(elapsed % 60).padStart(2, '0');
+      document.getElementById('timer').textContent = m + ':' + s;
+    }, 1000);
+
+  } catch (e) {
+    showToast('无法访问麦克风: ' + e.message, 'error');
+  }
+}
+
+async function stopRecord() {
+  srStopping = true;
+  if (mediaRecorder) {
+    if (mediaRecorder.state === 'recording') mediaRecorder.requestData();
+    mediaRecorder.stop();
+  }
+  if (transcriptArea.contentEditable === 'true') transcriptArea.blur();
+  if (recognition) { try { recognition.abort(); } catch(_) {} recognition = null; }
+  clearInterval(timerInterval);
+  clearInterval(autoSaveTimer);
+  document.getElementById('startBtn').textContent = '🎙 开始录音';
+  document.getElementById('startBtn').classList.remove('btn-danger');
+  document.getElementById('startBtn').classList.add('btn-primary');
+  srStopping = false;
+}
+
+function resetRecorder() {
+  if (transcriptArea.contentEditable === 'true') transcriptArea.blur();
+  timestampedTranscript = '';
+  textSinceTimestamp = '';
+  noteId = null;
+  chunkIdx = 1;
+  lastSaveAudioIdx = 0;
+  lastSaveTime = 0;
+  audioChunks = [];
+  clearInterval(pollTimer);
+  pollTimer = null;
+  clearTimeout(polishHintTimer);
+  document.getElementById('transcriptArea').innerHTML = '<p class="text-muted" id="transcriptPlaceholder">点击"开始录音"，说话内容实时显示在这里。</p>';
+  document.getElementById('transcriptArea').style.background = '#f8fafc';
+  document.getElementById('transcriptArea').style.borderColor = 'var(--border)';
+  document.getElementById('polishHint').style.display = 'none';
+  document.getElementById('polishHint').style.opacity = '1';
+  document.getElementById('uploadArea').style.display = 'none';
+  document.getElementById('noteLink').style.display = 'none';
+  document.getElementById('timer').textContent = '00:00';
+  document.getElementById('chunkBadge').style.display = 'none';
+  document.getElementById('recHint').style.display = 'block';
+}
+</script>

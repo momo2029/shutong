@@ -12,6 +12,7 @@
       <button class="btn btn-outline btn-sm" onclick="capturePhoto()">📷 拍照</button>
     <% } else if (note.status === 'processing') { %>
       <span class="tag tag-warning">处理中</span>
+      <span style="font-size:12px;color:var(--text-muted);">语音识别 → 大模型润色 → 提取摘要重点</span>
     <% } else if (note.status === 'failed') { %>
       <span class="tag tag-error">处理失败</span>
     <% } %>
@@ -96,11 +97,23 @@
   <% } %>
 </div>
 
+<div class="card mt-2" id="revisionCard" style="display:none;">
+  <h4 style="cursor:pointer;" onclick="document.getElementById('revisionBody').style.display = document.getElementById('revisionBody').style.display === 'none' ? 'block' : 'none'">
+    📋 修改日志 <span id="revisionCount" style="font-weight:400;font-size:13px;color:var(--text-muted);"></span>
+    <span style="float:right;font-size:13px;color:var(--text-muted);"><span id="revisionArrow">▶</span></span>
+  </h4>
+  <div id="revisionBody" style="display:none;margin-top:12px;">
+    <div id="revisionTimeline" style="max-height:400px;overflow-y:auto;"></div>
+  </div>
+</div>
+
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/wavesurfer.js@7/dist/wavesurfer.min.css">
 <script src="https://cdn.jsdelivr.net/npm/wavesurfer.js@7/dist/wavesurfer.esm.js" type="module"></script>
 <script src="https://cdn.jsdelivr.net/npm/d3@7.9.0/dist/d3.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/markmap-lib@0.18.10/dist/browser/index.js"></script>
+<script>window.__mmLib = window.markmap;</script>
 <script src="https://cdn.jsdelivr.net/npm/markmap-view@0.18.10/dist/browser/index.js"></script>
+<script>window.markmap = { ...window.__mmLib, ...window.markmap };</script>
 <script>
 let ws = null;
 
@@ -141,42 +154,127 @@ document.addEventListener('DOMContentLoaded', () => {
   initWaveform();
   <% } %>
 
-  // 录制中：轮询标记正在查看 + 自动刷新转录内容
-  <% if (note.status === 'recording') { %>
-  const viewingInterval = setInterval(() => {
-    fetch('/api/notes/<%= note.id %>/viewing', { method: 'POST' }).catch(() => {});
-  }, 5000);
+  // 录制中 / 处理中：自动刷新内容
+  <% if (note.status === 'recording' || note.status === 'processing') { %>
 
-  // 每 8 秒自动刷新转录内容
-  let refreshTimer = null;
+  // 处理中：轮询直到完成（显示逐步优化的转写）
+  let refreshCount = 0;
   function scheduleRefresh() {
-    refreshTimer = setTimeout(() => {
+    const interval = <%= note.status === 'recording' ? 8000 : 5000 %>;
+    const timer = setTimeout(() => {
       fetch(window.location.href, { headers: { 'X-Requested-With': 'XMLHttpRequest' } })
         .then(r => r.text())
         .then(html => {
           const parser = new DOMParser();
           const doc = parser.parseFromString(html, 'text/html');
-          const newTranscript = [...doc.querySelectorAll('.md-body')].pop();
-          const oldCards = document.querySelectorAll('.md-body');
-          const oldTranscript = oldCards[oldCards.length - 1];
-          if (newTranscript && oldTranscript && newTranscript.textContent !== oldTranscript.textContent) {
-            oldTranscript.textContent = newTranscript.textContent;
-          }
-          // 检查是否已结束录制
           const newTag = doc.querySelector('.tag');
-          if (newTag && !newTag.classList.contains('tag-recording')) {
+          const isStillProcessing = newTag && newTag.classList.contains('tag-warning') && newTag.textContent.includes('处理中');
+          const isRecording = newTag && newTag.classList.contains('tag-recording');
+
+          // 如果状态变了，整页刷新
+          if (!isStillProcessing && !isRecording) {
             window.location.reload();
+            return;
           }
-        }).catch(() => {}).finally(() => {
+
+          // 转录文字变化 → 就地更新
+          const allNew = doc.querySelectorAll('.md-body');
+          const allOld = document.querySelectorAll('.md-body');
+          if (allNew.length === allOld.length + 1) allNew.shift();
+          for (let i = 0; i < Math.min(allNew.length, allOld.length); i++) {
+            if (allNew[i].textContent !== allOld[i].textContent) {
+              allOld[i].textContent = allNew[i].textContent;
+            }
+          }
+
+          refreshCount++;
           scheduleRefresh();
-        });
-    }, 15000);
+        }).catch(() => { scheduleRefresh(); });
+    }, interval);
   }
+
+  <% if (note.status === 'recording') { %>
+  const viewingInterval = setInterval(() => {
+    fetch('/api/notes/<%= note.id %>/viewing', { method: 'POST' }).catch(() => {});
+  }, 5000);
+  <% } %>
+
   scheduleRefresh();
 
-  window.addEventListener('beforeunload', () => { clearInterval(viewingInterval); clearTimeout(refreshTimer); });
+  window.addEventListener('beforeunload', () => {
+    if (typeof viewingInterval !== 'undefined') clearInterval(viewingInterval);
+  });
   <% } %>
 });
+
+// ─── 修改日志 ──────────────────────────────────────
+(async function loadRevisions() {
+  try {
+    const res = await fetch('/api/notes/<%= note.id %>');
+    const data = await res.json();
+    const logs = data.revisions || [];
+    if (logs.length === 0) return;
+
+    document.getElementById('revisionCard').style.display = 'block';
+    document.getElementById('revisionCount').textContent = '(' + logs.length + ' 次修改)';
+
+    const stages = { asr: '🤖 ASR 替换', polish_chunk_1: '✨ 第1段润色', polish_chunk_2: '✨ 第2段润色', polish_chunk_3: '✨ 第3段润色', polish_chunk_4: '✨ 第4段润色', polish_chunk_5: '✨ 第5段润色', polish_final: '✅ 最终润色' };
+
+    let html = '<div style="border-left:2px solid #e2e8f0;padding-left:16px;">';
+    for (const log of logs) {
+      const label = stages[log.stage] || '📝 ' + log.stage;
+      const time = log.created_at ? new Date(log.created_at).toLocaleTimeString('zh-CN') : '';
+      const diff = log.chars_changed > 0 ? '+' + log.chars_changed + ' 字' : log.chars_changed + ' 字';
+      const diffColor = log.chars_changed > 0 ? '#16a34a' : '#dc2626';
+      html += '<div style="margin-bottom:20px;position:relative;">';
+      html += '<div style="position:absolute;left:-22px;top:2px;width:8px;height:8px;border-radius:50%;background:#4f46e5;"></div>';
+      html += '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px;">';
+      html += '<span style="font-weight:600;font-size:13px;">' + label + '</span>';
+      html += '<span style="font-size:11px;color:var(--text-muted);">' + time + ' · <span style="color:' + diffColor + ';">' + diff + '</span></span>';
+      html += '</div>';
+
+      // 找前 200 字中前 3 个不同之处
+      const changes = findDiffs(log.old_text || '', log.new_text || '', 3);
+      html += '<div style="font-size:12px;line-height:1.6;color:#64748b;background:#f8fafc;border-radius:4px;padding:8px;">';
+      for (const c of changes) {
+        html += c + '<br>';
+      }
+      html += '</div>';
+      html += '</div>';
+    }
+    html += '</div>';
+    document.getElementById('revisionTimeline').innerHTML = html;
+  } catch(_) {}
+})();
+
+function findDiffs(old, new_, max) {
+  const result = [];
+  const oldWords = old.split('');
+  const newWords = new_.split('');
+  let i = 0, j = 0, found = 0;
+  while (i < oldWords.length && j < newWords.length && found < max) {
+    if (oldWords[i] !== newWords[j]) {
+      // 找相同点
+      let oi = i, ni = j, diffOld = '', diffNew = '';
+      while ((oi < oldWords.length || ni < newWords.length) && found < max) {
+        if (oi < oldWords.length && ni < newWords.length && oldWords[oi] === newWords[ni]) break;
+        if (oi < oldWords.length) diffOld += oldWords[oi++];
+        if (ni < newWords.length) diffNew += newWords[ni++];
+        if (diffOld.length > 15 && diffNew.length > 15) break;
+      }
+      if (diffOld || diffNew) {
+        const ctxOld = oldWords.slice(Math.max(0, i - 8), i).join('');
+        const label = diffOld && diffNew ? '<span style="color:#dc2626;text-decoration:line-through;">' + ctxOld + diffOld.slice(0, 20) + '</span> → <span style="color:#16a34a;">' + diffNew.slice(0, 20) + '</span>' : (diffOld ? '<span style="color:#dc2626;">删除：' + ctxOld + diffOld.slice(0, 20) + '</span>' : '<span style="color:#16a34a;">新增：' + diffNew.slice(0, 20) + '</span>');
+        result.push(label);
+        found++;
+      }
+      i = oi; j = ni;
+    } else {
+      i++; j++;
+    }
+  }
+  return result.length > 0 ? result : ['（润色优化）'];
+}
 
 // ─── 思维导图 ──────────────────────────────────────
 let mmRendered = false;
@@ -259,10 +357,10 @@ async function deleteNote() {
     if (data.ok) {
       window.location.href = '/notes';
     } else {
-      alert('删除失败: ' + (data.error || '未知错误'));
+      showToast('删除失败: ' + (data.error || '未知错误'), 'error');
     }
   } catch(e) {
-    alert('请求失败');
+    showToast('请求失败', 'error');
   }
 }
 
@@ -274,10 +372,10 @@ async function stopRecording() {
     if (data.ok) {
       window.location.reload();
     } else {
-      alert('操作失败: ' + (data.error || '未知错误'));
+      showToast('操作失败: ' + (data.error || '未知错误'), 'error');
     }
   } catch(e) {
-    alert('请求失败');
+    showToast('请求失败', 'error');
   }
 }
 
@@ -286,13 +384,13 @@ async function resumeRecording() {
     const res = await fetch('/api/notes/<%= note.id %>/resume-recording', { method: 'POST' });
     const data = await res.json();
     if (data.ok) {
-      alert('已发送录音指令，设备检测到声音后将创建新笔记继续录音');
+      showToast('已发送录音指令，设备检测到声音后将创建新笔记继续录音', 'success');
       window.location.href = '/notes';
     } else {
-      alert('操作失败: ' + (data.error || '未知错误'));
+      showToast('操作失败: ' + (data.error || '未知错误'), 'error');
     }
   } catch(e) {
-    alert('请求失败');
+    showToast('请求失败', 'error');
   }
 }
 
@@ -301,13 +399,13 @@ async function capturePhoto() {
     const res = await fetch('/api/notes/<%= note.id %>/capture', { method: 'POST' });
     const data = await res.json();
     if (data.ok) {
-      alert('拍照指令已发送，请稍后刷新查看照片');
+      showToast('拍照指令已发送，请稍后刷新查看照片', 'success');
       setTimeout(() => window.location.reload(), 3000);
     } else {
-      alert('操作失败: ' + (data.error || '未知错误'));
+      showToast('操作失败: ' + (data.error || '未知错误'), 'error');
     }
   } catch(e) {
-    alert('请求失败');
+    showToast('请求失败', 'error');
   }
 }
 </script>

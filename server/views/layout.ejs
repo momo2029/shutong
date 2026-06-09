@@ -8,7 +8,8 @@
   <link rel="manifest" href="/public/manifest.json">
 </head>
 <body>
-  <%- include('partials/header', { user }) %>
+  <%- include('partials/header', { user, flash }) %>
+  <div id="toastContainer" class="toast-container"></div>
   <main class="container">
     <%- body %>
   </main>

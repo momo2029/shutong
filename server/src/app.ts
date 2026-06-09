@@ -9,7 +9,7 @@ import { getMediaUrl } from './services/storage.js';
 
 // Custom context variables
 export type Vars = {
-  user: { id: string; email: string; nickname: string; plan: string; storageUsed: number; storageLimit: number };
+  user: { id: string; email: string; nickname: string; role: string; plan: string; storageUsed: number; storageLimit: number };
   render: (view: string, data?: Record<string, unknown>) => Promise<Response>;
 };
 
@@ -27,7 +27,7 @@ function render(view: string, data: Record<string, unknown> = {}) {
   const viewPath = join(__dirname, '..', 'views', view);
   const layoutPath = join(__dirname, '..', 'views', 'layout.ejs');
   const viewTpl = readFileSync(viewPath, 'utf-8');
-  const renderData = { ...data, env, user: (data as Record<string, unknown>).user || null };
+  const renderData = { ...data, env, user: data.user || null, flash: data.flash || null };
   const body = ejs.render(viewTpl, renderData, { filename: viewPath });
   const layoutTpl = readFileSync(layoutPath, 'utf-8');
   return ejs.render(layoutTpl, { ...renderData, body }, { filename: layoutPath });
@@ -42,8 +42,15 @@ app.use('*', async (c, next) => {
 // Store render helper on context, auto-inject user from JWT cookie
 app.use('*', async (c, next) => {
   c.set('render', async (view: string, data: Record<string, unknown> = {}) => {
+    const cookie = c.req.header('cookie') || '';
+    if (!data.flash) {
+      const flashMatch = cookie.match(/flash=([^;]+)/);
+      if (flashMatch) {
+        try { data.flash = JSON.parse(decodeURIComponent(flashMatch[1])); } catch (_) {}
+        c.header('Set-Cookie', 'flash=; Path=/; Max-Age=0');
+      }
+    }
     if (!data.user) {
-      const cookie = c.req.header('cookie') || '';
       const match = cookie.match(/token=([^;]+)/);
       if (match) {
         try {
@@ -160,6 +167,12 @@ app.get('/notes/record', async (c) => {
   if (!match) return c.redirect('/auth/login');
   return c.var.render('notes/record.ejs', { title: '录音' });
 });
+app.get('/notes/record/:id', async (c) => {
+  const cookie = c.req.header('cookie') || '';
+  const match = cookie.match(/token=([^;]+)/);
+  if (!match) return c.redirect('/auth/login');
+  return c.var.render('notes/record.ejs', { title: '录音' });
+});
 app.get('/notes/search', async (c) => c.var.render('notes/search.ejs', { title: '搜索笔记' }));
 app.get('/notes/:id', async (c) => {
   const cookie = c.req.header('cookie') || '';
@@ -192,6 +205,44 @@ app.get('/notes/:id', async (c) => {
     }));
     return c.var.render('notes/detail.ejs', { title: note.title, note: noteWithHtml, images: imagesWithUrls, courseName });
   } catch (e) { return c.redirect('/auth/login'); }
+});
+
+// 房间公开页 — /r/:sn（无需登录，用于 BLE/NFC 广播）
+app.get('/r/:sn', async (c) => {
+  const sn = c.req.param('sn');
+  const device = db.select().from(devices).where(eq(devices.sn, sn)).get();
+  if (!device) return c.var.render('room/not-found.ejs', { title: '房间未找到', sn });
+
+  const noteId = c.req.query('note');
+  let activeNote: any = null;
+  if (noteId) {
+    activeNote = db.select().from(notes).where(eq(notes.id, noteId)).get();
+  }
+  if (!activeNote) {
+    // 取最近一条笔记
+    const recent = db.select().from(notes).where(eq(notes.deviceId, device.id)).orderBy(desc(notes.createdAt)).limit(1).all();
+    activeNote = recent.length > 0 ? recent[0] : null;
+  }
+
+  if (!activeNote) {
+    return c.var.render('room/empty.ejs', { title: device.name || sn, sn, deviceName: device.name });
+  }
+
+  const images = db.select().from(noteImages).where(eq(noteImages.noteId, activeNote.id)).orderBy(noteImages.sortOrder).all();
+  const imageStyle = getEnv().QINIU_IMAGE_STYLE;
+  const noteWithHtml = {
+    ...activeNote,
+    audioPath: getMediaUrl(activeNote.audioPath, { expiresIn: 86400 }),
+    aiSummaryHtml: activeNote.aiSummary ? marked.parse(activeNote.aiSummary) : '',
+    examPointsHtml: activeNote.examPoints ? marked.parse(activeNote.examPoints) : '',
+    mindMapHtml: activeNote.mindMap ? marked.parse(activeNote.mindMap) : '',
+  };
+  const imagesWithUrls = images.map(img => ({
+    ...img,
+    imagePath: getMediaUrl(img.imagePath, { style: imageStyle, expiresIn: 86400 }),
+  }));
+
+  return c.var.render('room/view.ejs', { title: activeNote.title, sn, deviceName: device.name, note: noteWithHtml, images: imagesWithUrls });
 });
 app.get('/knowledge/ask', async (c) => c.var.render('knowledge/ask.ejs', { title: '知识库问答' }));
 app.get('/admin', async (c) => c.var.render('admin/index.ejs', { title: '管理后台' }));

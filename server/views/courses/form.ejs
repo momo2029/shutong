@@ -28,6 +28,6 @@ document.getElementById('courseForm').addEventListener('submit', async (e) => {
   const url = isEdit ? '/api/courses/<%= isEdit ? course.id : "" %>' : '/api/courses';
   const resp = await fetch(url, { method: isEdit ? 'PUT' : 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body });
   if (resp.ok) { window.location.href = '/courses'; }
-  else { const data = await resp.json(); alert(data.error || '保存失败'); }
+  else { const data = await resp.json(); showToast(data.error || '保存失败', 'error'); }
 });
 </script>
