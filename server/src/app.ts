@@ -6,11 +6,14 @@ import { users, courses, devices, notes, noteImages } from './db/schema.js';
 import { eq, and, desc } from 'drizzle-orm';
 import { marked } from 'marked';
 import { getMediaUrl } from './services/storage.js';
+import { logger, errorFields } from './utils/logger.js';
+import { randomUUID } from 'crypto';
 
 // Custom context variables
 export type Vars = {
   user: { id: string; email: string; nickname: string; role: string; plan: string; storageUsed: number; storageLimit: number };
   render: (view: string, data?: Record<string, unknown>) => Promise<Response>;
+  reqId: string;
 };
 
 const app = new Hono<{ Variables: Vars }>();
@@ -39,6 +42,19 @@ app.use('*', async (c, next) => {
   c.header('X-App-Version', '20260605-2');
 });
 
+// Request ID middleware + slow request warning
+app.use('*', async (c, next) => {
+  const reqId = randomUUID().slice(0, 8);
+  c.set('reqId', reqId);
+  c.header('X-Request-ID', reqId);
+  const t0 = Date.now();
+  await next();
+  const elapsed = Date.now() - t0;
+  if (elapsed > 1000) {
+    logger.warn('slow request', { reqId, method: c.req.method, path: c.req.path, elapsed });
+  }
+});
+
 // Store render helper on context, auto-inject user from JWT cookie
 app.use('*', async (c, next) => {
   c.set('render', async (view: string, data: Record<string, unknown> = {}) => {
@@ -60,7 +76,7 @@ app.use('*', async (c, next) => {
           if (u) {
             data.user = { id: u.id, email: u.email, nickname: u.nickname, plan: u.plan, storageUsed: u.storageUsed, storageLimit: u.storageLimit };
           }
-        } catch (e) { console.error('[render] JWT failed:', (e as Error).message); }
+        } catch (e) { logger.error('JWT verify failed', errorFields(e)); }
       }
     }
     const html = render(view, data);

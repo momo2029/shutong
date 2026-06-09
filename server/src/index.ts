@@ -1,9 +1,9 @@
 // Safety net: prevent 3rd-party SDK async errors from crashing the process
 process.on('unhandledRejection', (reason) => {
-  console.error('[process] unhandledRejection:', reason);
+  logger.error('unhandledRejection', errorFields(reason));
 });
 process.on('uncaughtException', (err) => {
-  console.error('[process] uncaughtException:', err.message);
+  logger.error('uncaughtException', errorFields(err));
 });
 
 import { serve } from '@hono/node-server';
@@ -11,6 +11,7 @@ import app from './app.js';
 import { getEnv } from './config.js';
 import { initMQTT } from './services/mqtt.js';
 import { rateLimit } from './middleware/rateLimit.js';
+import { logger, errorFields } from './utils/logger.js';
 
 const env = getEnv();
 
@@ -43,5 +44,5 @@ app.route('/api/knowledge', knowledge);
 // Init MQTT
 initMQTT();
 
-console.log(`Server starting on http://localhost:${env.PORT}`);
+logger.info('server starting', { port: env.PORT });
 serve({ fetch: app.fetch, port: env.PORT });

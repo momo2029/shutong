@@ -1,5 +1,6 @@
 import { getEnv } from '../config.js';
 import { readFileSync } from 'fs';
+import { logger, errorFields } from '../utils/logger.js';
 
 export async function transcribe(audioPath: string, model?: string): Promise<string> {
   const env = getEnv();
@@ -19,7 +20,7 @@ export async function transcribe(audioPath: string, model?: string): Promise<str
     return transcribeLocal(audioPath, env.ASR_SERVICE_URL);
   }
 
-  console.log('[ASR] No API key or service URL configured, returning placeholder');
+  logger.warn('ASR not configured');
   return '';
 }
 
@@ -47,16 +48,16 @@ async function transcribeSiliconFlow(audioPath: string, apiKey: string, modelOve
 
     if (!res.ok) {
       const errText = await res.text();
-      console.error('[ASR] SiliconFlow error:', res.status, errText);
+      logger.error('ASR SiliconFlow error', { status: res.status, body: errText });
       return '';
     }
 
     const data = await res.json() as { text?: string };
     const text = data.text || '';
-    console.log(`[ASR] SiliconFlow transcribed ${wavBuffer.length} bytes -> ${text.length} chars`);
+    logger.info('ASR SiliconFlow transcribed', { bytes: wavBuffer.length, chars: text.length, model });
     return text;
   } catch (e: unknown) {
-    console.error('[ASR] SiliconFlow request failed:', (e as Error).message);
+    logger.error('ASR SiliconFlow request failed', errorFields(e));
     return '';
   }
 }
@@ -72,15 +73,15 @@ async function transcribeLocal(audioPath: string, serviceUrl: string): Promise<s
     });
 
     if (!res.ok) {
-      console.error('[ASR] Local service error:', res.status, await res.text());
+      logger.error('ASR local service error', { status: res.status, body: await res.text() });
       return '';
     }
 
     const data = await res.json() as { text: string };
-    console.log(`[ASR] Local service transcribed ${wavBuffer.length} bytes -> ${data.text.length} chars`);
+    logger.info('ASR local service transcribed', { bytes: wavBuffer.length, chars: data.text.length });
     return data.text;
   } catch (e: unknown) {
-    console.error('[ASR] Local service failed:', (e as Error).message);
+    logger.error('ASR local service failed', errorFields(e));
     return '';
   }
 }
@@ -114,16 +115,16 @@ async function transcribeMiMo(audioPath: string, model: string, apiKey: string, 
 
     if (!res.ok) {
       const errText = await res.text();
-      console.error('[ASR] MiMo error:', res.status, errText);
+      logger.error('ASR MiMo error', { status: res.status, body: errText, model });
       return '';
     }
 
     const data = await res.json() as { choices?: Array<{ message?: { content?: string } }> };
     const text = data.choices?.[0]?.message?.content || '';
-    console.log(`[ASR] MiMo ${model} transcribed ${wavBuffer.length} bytes -> ${text.length} chars`);
+    logger.info('ASR MiMo transcribed', { bytes: wavBuffer.length, chars: text.length, model });
     return text;
   } catch (e: unknown) {
-    console.error('[ASR] MiMo request failed:', (e as Error).message);
+    logger.error('ASR MiMo request failed', { ...errorFields(e), model });
     return '';
   }
 }
