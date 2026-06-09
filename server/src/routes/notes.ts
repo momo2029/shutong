@@ -154,6 +154,20 @@ app.post('/:id/reprocess', (c) => {
   return c.json({ ok: true });
 });
 
+// 确认建议课程
+app.post('/:id/confirm-course', async (c) => {
+  const note = db.select().from(notes).where(and(eq(notes.id, c.req.param('id')), eq(notes.userId, c.var.user.id))).get();
+  if (!note || !note.suggestedCourseId) return c.json({ error: '无建议课程' }, 400);
+  db.update(notes).set({ courseId: note.suggestedCourseId, suggestedCourseId: null, updatedAt: new Date().toISOString() }).where(eq(notes.id, c.req.param('id'))).run();
+  return c.json({ ok: true });
+});
+
+// 忽略建议课程
+app.post('/:id/dismiss-course', async (c) => {
+  db.update(notes).set({ suggestedCourseId: null, updatedAt: new Date().toISOString() }).where(and(eq(notes.id, c.req.param('id')), eq(notes.userId, c.var.user.id))).run();
+  return c.json({ ok: true });
+});
+
 // 关联课程
 app.put('/:id/course', async (c) => {
   const note = db.select().from(notes).where(and(eq(notes.id, c.req.param('id')), eq(notes.userId, c.var.user.id))).get();

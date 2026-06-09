@@ -30,7 +30,9 @@ sqlite.exec(`
   CREATE TABLE IF NOT EXISTS notes (
     id TEXT PRIMARY KEY, user_id TEXT NOT NULL REFERENCES users(id),
     device_id TEXT REFERENCES devices(id),
-    course_id TEXT REFERENCES courses(id) ON DELETE SET NULL, title TEXT NOT NULL DEFAULT '',
+    course_id TEXT REFERENCES courses(id) ON DELETE SET NULL,
+    suggested_course_id TEXT REFERENCES courses(id) ON DELETE SET NULL,
+    title TEXT NOT NULL DEFAULT '',
     raw_transcript TEXT NOT NULL DEFAULT '', ai_summary TEXT NOT NULL DEFAULT '',
     exam_points TEXT NOT NULL DEFAULT '', mind_map TEXT NOT NULL DEFAULT '',
     tags TEXT NOT NULL DEFAULT '', status TEXT NOT NULL DEFAULT 'processing',
@@ -95,6 +97,12 @@ try {
 }
 try {
   sqlite.exec(`ALTER TABLE ai_tasks ADD COLUMN max_retries INTEGER NOT NULL DEFAULT 3;`);
+} catch (_e) {
+  // column already exists, ignore
+}
+
+try {
+  sqlite.exec(`ALTER TABLE notes ADD COLUMN suggested_course_id TEXT REFERENCES courses(id) ON DELETE SET NULL;`);
 } catch (_e) {
   // column already exists, ignore
 }

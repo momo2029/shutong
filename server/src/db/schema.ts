@@ -40,6 +40,7 @@ export const notes = sqliteTable('notes', {
   userId: text('user_id').notNull().references(() => users.id),
   deviceId: text('device_id').references(() => devices.id),
   courseId: text('course_id').references(() => courses.id, { onDelete: 'set null' }),
+  suggestedCourseId: text('suggested_course_id').references(() => courses.id, { onDelete: 'set null' }),
   title: text('title').notNull().default(''),
   rawTranscript: text('raw_transcript').notNull().default(''),
   aiSummary: text('ai_summary').notNull().default(''),

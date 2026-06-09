@@ -19,6 +19,18 @@
   </div>
 </div>
 
+<% if (!note.courseId && note.suggestedCourseId && typeof suggestedCourseName !== 'undefined' && suggestedCourseName) { %>
+<div class="card mt-2" style="border-left:4px solid var(--primary);">
+  <div class="flex-between" style="gap:12px;">
+    <div>建议归类到课程：<strong><%= suggestedCourseName %></strong></div>
+    <div style="display:flex;gap:8px;">
+      <button class="btn btn-primary btn-sm" onclick="confirmCourseSuggestion()">确认</button>
+      <button class="btn btn-outline btn-sm" onclick="dismissCourseSuggestion()">忽略</button>
+    </div>
+  </div>
+</div>
+<% } %>
+
 <div class="card mt-2">
   <div class="note-card-meta" style="margin-bottom:12px;">
     <span>📅 <%= note.createdAt && note.createdAt[0] !== '(' ? new Date(new Date(note.createdAt).getTime() + 8*3600000).toISOString().replace('T',' ').substring(0,19) : '未知' %></span>
@@ -347,6 +359,18 @@ function renderMindMap() {
     }, root);
     mmRendered = true;
   }
+}
+
+async function confirmCourseSuggestion() {
+  const res = await fetch('/api/notes/<%= note.id %>/confirm-course', { method: 'POST' });
+  if (res.ok) window.location.reload();
+  else showToast('确认失败', 'error');
+}
+
+async function dismissCourseSuggestion() {
+  const res = await fetch('/api/notes/<%= note.id %>/dismiss-course', { method: 'POST' });
+  if (res.ok) window.location.reload();
+  else showToast('忽略失败', 'error');
 }
 
 async function deleteNote() {

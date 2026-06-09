@@ -186,9 +186,14 @@ app.get('/notes/:id', async (c) => {
     const images = db.select().from(noteImages).where(eq(noteImages.noteId, note.id)).orderBy(noteImages.sortOrder).all();
     // 查询关联课程
     let courseName = '';
+    let suggestedCourseName = '';
     if (note.courseId) {
       const course = db.select().from(courses).where(eq(courses.id, note.courseId)).get();
       courseName = course?.name || '';
+    }
+    if (note.suggestedCourseId) {
+      const suggested = db.select().from(courses).where(eq(courses.id, note.suggestedCourseId)).get();
+      suggestedCourseName = suggested?.name || '';
     }
     // 生成七牛云私有下载 URL（图片可选样式处理）
     const imageStyle = getEnv().QINIU_IMAGE_STYLE;
@@ -203,7 +208,7 @@ app.get('/notes/:id', async (c) => {
       ...img,
       imagePath: getMediaUrl(img.imagePath, { style: imageStyle, expiresIn: 86400 }),
     }));
-    return c.var.render('notes/detail.ejs', { title: note.title, note: noteWithHtml, images: imagesWithUrls, courseName });
+    return c.var.render('notes/detail.ejs', { title: note.title, note: noteWithHtml, images: imagesWithUrls, courseName, suggestedCourseName });
   } catch (e) { return c.redirect('/auth/login'); }
 });
 

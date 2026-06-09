@@ -1,10 +1,10 @@
 import { db, raw } from '../db/index.js';
-import { aiTasks, notes, revisionLogs } from '../db/schema.js';
+import { aiTasks, courses, notes, revisionLogs } from '../db/schema.js';
 import { eq, and } from 'drizzle-orm';
 import { snowflake } from '../utils/snowflake.js';
 import { transcribe } from './asr.js';
 import { recognize } from './ocr.js';
-import { generateSummary, generateExamPoints, generateMindMap } from './llm.js';
+import { generateSummary, generateExamPoints, generateMindMap, classifyCourse } from './llm.js';
 import { execSync } from 'child_process';
 import { existsSync, unlinkSync, statSync } from 'fs';
 import { join } from 'path';
@@ -251,15 +251,26 @@ export async function processQueue() {
           const summary = await generateSummary(note.rawTranscript);
           db.update(notes).set({ aiSummary: summary }).where(eq(notes.id, note.id)).run();
 
+          let titleForClassify = note.title;
           // 用摘要自动生成标题（免费 DeepSeek-R1）
           if (summary && note.title.startsWith('课堂笔记')) {
             try {
               const newTitle = await generateTitle(summary);
               if (newTitle) {
+                titleForClassify = newTitle;
                 db.update(notes).set({ title: newTitle, updatedAt: new Date().toISOString() }).where(eq(notes.id, note.id)).run();
                 console.log(`[Queue] Title generated: ${newTitle}`);
               }
             } catch (e) { /* 标题生成失败不影响主流程 */ }
+          }
+
+          if (summary && !note.courseId) {
+            const courseList = db.select().from(courses).where(eq(courses.userId, note.userId)).all();
+            const suggestedCourseId = await classifyCourse({ title: titleForClassify, summary, transcript: note.rawTranscript, courses: courseList });
+            if (suggestedCourseId) {
+              db.update(notes).set({ suggestedCourseId, updatedAt: new Date().toISOString() }).where(eq(notes.id, note.id)).run();
+              console.log(`[Queue] Course suggested: ${suggestedCourseId}`);
+            }
           }
           break;
         }
