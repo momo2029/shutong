@@ -1,7 +1,7 @@
 import { Hono } from 'hono';
 import { authMiddleware } from '../middleware/auth.js';
 import { db } from '../db/index.js';
-import { notes, aiTasks } from '../db/schema.js';
+import { devices, notes, aiTasks } from '../db/schema.js';
 import { eq, and } from 'drizzle-orm';
 import { createTask } from '../services/queue.js';
 import { transcribe } from '../services/asr.js';
@@ -15,6 +15,40 @@ app.use('*', authMiddleware);
 function ownNote(noteId: string, userId: string) {
   return db.select().from(notes).where(and(eq(notes.id, noteId), eq(notes.userId, userId))).get();
 }
+
+app.post('/tts', async (c) => {
+  const { text, deviceId } = await c.req.json().catch(() => ({})) as { text?: string; deviceId?: string };
+  const input = (text || '').trim();
+  if (!input) return c.json({ error: '文本不能为空' }, 400);
+  if (input.length > 120) return c.json({ error: '文本不能超过120字' }, 400);
+  if (deviceId && input.length > 40) return c.json({ error: '设备播放文本不能超过40字' }, 400);
+
+  const dev = deviceId
+    ? db.select().from(devices).where(and(eq(devices.id, deviceId), eq(devices.userId, c.var.user.id))).get()
+    : null;
+  if (deviceId && !dev) return c.json({ error: '设备不存在' }, 404);
+
+  const { synthesizeSpeech, pcmToWav } = await import('../services/tts.js');
+  let pcm: Buffer;
+  try {
+    pcm = await synthesizeSpeech(input);
+  } catch (e) {
+    return c.json({ error: (e as Error).message }, 502);
+  }
+
+  if (dev) {
+    const { publishCommand } = await import('../services/mqtt.js');
+    await publishCommand(dev.sn, 'tts_play', { codec: 'pcm_s16le', sample_rate: 16000, data: pcm.toString('base64') });
+    return c.json({ ok: true });
+  }
+
+  return new Response(pcmToWav(pcm), {
+    headers: {
+      'Content-Type': 'audio/wav',
+      'Content-Disposition': 'inline; filename="tts.wav"',
+    },
+  });
+});
 
 app.get('/tasks/:noteId', (c) => {
   if (!ownNote(c.req.param('noteId'), c.var.user.id)) return c.json({ error: '笔记不存在' }, 404);

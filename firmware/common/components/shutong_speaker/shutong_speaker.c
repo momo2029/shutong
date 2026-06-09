@@ -166,6 +166,10 @@ void shutong_speaker_play_shutter(void) {
   free(buf);
 }
 
+void shutong_speaker_play_pcm(const uint8_t *pcm_data, uint32_t pcm_size) {
+  play_pcm(pcm_data, pcm_size);
+}
+
 void shutong_speaker_set_volume(float vol) {
   if (vol < 0.0f) vol = 0.0f;
   if (vol > 1.0f) vol = 1.0f;

@@ -163,6 +163,7 @@ device_cmd_t proto_parse_cmd(cJSON *json, char *ref_msg_id, size_t id_len) {
   if (strcmp(cmd->valuestring, "ping") == 0) return CMD_PING;
   if (strcmp(cmd->valuestring, "reboot") == 0) return CMD_REBOOT;
   if (strcmp(cmd->valuestring, "capture") == 0) return CMD_CAPTURE;
+  if (strcmp(cmd->valuestring, "tts_play") == 0) return CMD_TTS_PLAY;
   return CMD_NONE;
 }
 

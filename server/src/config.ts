@@ -22,6 +22,7 @@ const env = {
   LLM_API_KEY: process.env.LLM_API_KEY || '',
   LLM_API_URL: process.env.LLM_API_URL || 'https://token-plan-cn.xiaomimimo.com/v1',
   LLM_MODEL: process.env.LLM_MODEL || 'mimo-v2.5-pro',
+  TTS_MODEL: process.env.TTS_MODEL || 'FunAudioLLM/CosyVoice2-0.5B',
 };
 
 export function getEnv() {

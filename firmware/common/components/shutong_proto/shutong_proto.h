@@ -32,6 +32,7 @@ typedef enum {
   CMD_PING,
   CMD_REBOOT,
   CMD_CAPTURE,
+  CMD_TTS_PLAY,
 } device_cmd_t;
 
 typedef struct {

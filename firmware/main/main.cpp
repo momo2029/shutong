@@ -9,6 +9,7 @@
 #include "nvs_flash.h"
 #include "driver/gpio.h"
 #include "cJSON.h"
+#include "mbedtls/base64.h"
 #include <sys/stat.h>
 
 // Xiaozhi WiFi + Button
@@ -375,6 +376,30 @@ static void on_mqtt_cmd(const char *type, const char *payload_json, const char *
           cJSON_Delete(ack);
         }
 #endif
+        break;
+
+      case CMD_TTS_PLAY:
+        ESP_LOGI(TAG, "CMD: tts_play");
+        {
+          cJSON *payload = cJSON_GetObjectItem(json, "payload");
+          cJSON *params = payload ? cJSON_GetObjectItem(payload, "params") : NULL;
+          cJSON *data = params ? cJSON_GetObjectItem(params, "data") : NULL;
+          if (data && cJSON_IsString(data) && data->valuestring) {
+            size_t b64_len = strlen(data->valuestring);
+            size_t pcm_cap = (b64_len * 3) / 4 + 4;
+            uint8_t *pcm = (uint8_t *)malloc(pcm_cap);
+            size_t pcm_len = 0;
+            if (pcm && mbedtls_base64_decode(pcm, pcm_cap, &pcm_len, (const unsigned char *)data->valuestring, b64_len) == 0) {
+              shutong_speaker_play_pcm(pcm, pcm_len);
+              cJSON *ack = proto_build_cmd_ack(ref, "tts_played", NULL);
+              char *str = cJSON_PrintUnformatted(ack);
+              shutong_mqtt_publish("cmd/ack", str);
+              cJSON_free(str);
+              cJSON_Delete(ack);
+            }
+            free(pcm);
+          }
+        }
         break;
 
       default:
