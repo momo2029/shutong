@@ -108,7 +108,9 @@ function initRecognition() {
     srState = 'RUNNING';
     document.getElementById('srBadge').style.display = 'inline';
     document.getElementById('srBadge').textContent = '识别中';
+    document.getElementById('srBadge').style.background = '#22c55e';
     resetSilenceTimer();
+    console.log('[SR] 开始监听');
   };
 
   recognition.onend = () => {
@@ -130,17 +132,38 @@ function initRecognition() {
   };
 
   recognition.onresult = (e) => {
+    console.log('[SR] 收到识别结果');
     browserInterim = '';
     for (let i = 0; i < e.results.length; i++) {
       const res = e.results[i][0];
       if (e.results[i].isFinal) {
         browserText += res.transcript;
+        console.log('[SR] Final:', res.transcript);
       } else {
         browserInterim = res.transcript;
+        console.log('[SR] Interim:', res.transcript);
       }
     }
     renderDisplay();
     resetSilenceTimer();
+  };
+
+  recognition.onspeechstart = () => {
+    console.log('[SR] 检测到语音');
+    document.getElementById('srBadge').textContent = '听到声音';
+  };
+
+  recognition.onspeechend = () => {
+    console.log('[SR] 语音结束');
+    document.getElementById('srBadge').textContent = '等待中';
+  };
+
+  recognition.onaudiostart = () => {
+    console.log('[SR] 音频输入开始');
+  };
+
+  recognition.onaudioend = () => {
+    console.log('[SR] 音频输入结束');
   };
 }
 
@@ -173,10 +196,14 @@ function resetAndRestartSR(delay = 500) {
 }
 
 function startSpeechRecognition() {
-  if (!hasSR) return;
+  if (!hasSR) {
+    console.log('[SR] 浏览器不支持语音识别');
+    return;
+  }
   if (!recognition) initRecognition();
   shouldKeepRunning = true;
   safeStartSR();
+  console.log('[SR] 语音识别已启动');
 }
 
 function stopSpeechRecognition() {
