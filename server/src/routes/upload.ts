@@ -8,6 +8,8 @@ import { eq, and } from 'drizzle-orm';
 import type { Vars } from '../app.js';
 
 const app = new Hono<{ Variables: Vars }>();
+const MAX_AUDIO_SIZE = 50 * 1024 * 1024;
+const MAX_IMAGE_SIZE = 10 * 1024 * 1024;
 
 app.use('*', authMiddleware);
 
@@ -16,6 +18,8 @@ app.post('/audio', async (c) => {
   const file = form.get('audio') as File | null;
   const title = form.get('title') as string || '网页录音笔记';
   if (!file) return c.json({ error: '未上传音频文件' }, 400);
+  if (file.size <= 0 || file.size > MAX_AUDIO_SIZE) return c.json({ error: '音频文件大小不合法' }, 400);
+  if (!file.type.startsWith('audio/')) return c.json({ error: '音频格式不支持' }, 400);
 
   const noteId = snowflake();
   const key = `audio/${c.var.user.id}/${noteId}.webm`;
@@ -32,6 +36,8 @@ app.post('/image', async (c) => {
   const noteId = form.get('noteId') as string;
   if (!file) return c.json({ error: '未上传图片' }, 400);
   if (!noteId) return c.json({ error: '缺少 noteId' }, 400);
+  if (file.size <= 0 || file.size > MAX_IMAGE_SIZE) return c.json({ error: '图片文件大小不合法' }, 400);
+  if (!file.type.startsWith('image/')) return c.json({ error: '图片格式不支持' }, 400);
 
   const note = db.select().from(notes).where(and(eq(notes.id, noteId), eq(notes.userId, c.var.user.id))).get();
   if (!note) return c.json({ error: '笔记不存在' }, 404);

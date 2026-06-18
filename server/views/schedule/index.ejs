@@ -1,0 +1,99 @@
+<%
+  const WEEKDAYS = ['周一', '周二', '周三', '周四', '周五', '周六', '周日'];
+  // 按 (weekday, slotIndex) 索引
+  const slotMap = {};
+  let maxSlot = 0;
+  for (const s of slots) {
+    slotMap[`${s.weekday}_${s.slot_index}`] = s;
+    if (s.slot_index > maxSlot) maxSlot = s.slot_index;
+  }
+  const _todayWd = typeof todayWeekday !== 'undefined' ? todayWeekday : (currentInfo?.weekday || 1);
+  const current = currentInfo?.current || null;
+  const next = currentInfo?.next || null;
+  const slotCount = Math.max(maxSlot, 8);
+%>
+<div class="flex-between">
+  <h2>本周课表</h2>
+  <div style="display:flex;gap:8px;">
+    <% if (current || next) { %>
+      <a href="/notes/record?slot=<%= (current || next).id %>" class="btn btn-primary">开始录音</a>
+    <% } else { %>
+      <a href="/notes/record" class="btn btn-primary">开始录音</a>
+    <% } %>
+    <a href="/schedule/edit" class="btn btn-outline">编辑课表</a>
+  </div>
+</div>
+
+<!-- 当前课程卡片 -->
+<div class="card mt-2" style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:12px;">
+  <% if (current) { %>
+    <div>
+      <div style="font-size:13px;color:var(--text-muted);">正在上课 · 已上 <%= current.elapsedMin %> 分钟</div>
+      <div style="font-size:20px;font-weight:600;margin-top:4px;"><%= current.course_name || '未命名' %></div>
+      <div style="font-size:13px;color:var(--text-muted);margin-top:2px;">
+        第<%= current.slot_index %>节 · <%= current.start_time %>–<%= current.end_time %><%= current.classroom ? ' · ' + current.classroom : '' %><%= current.teacher ? ' · ' + current.teacher : '' %>
+      </div>
+    </div>
+    <a href="/notes/record?slot=<%= current.id %>" class="btn btn-primary">为本节录音</a>
+  <% } else if (next) { %>
+    <div>
+      <div style="font-size:13px;color:var(--text-muted);">下一节 · 还有 <%= next.waitMin %> 分钟</div>
+      <div style="font-size:20px;font-weight:600;margin-top:4px;"><%= next.course_name || '未命名' %></div>
+      <div style="font-size:13px;color:var(--text-muted);margin-top:2px;">
+        第<%= next.slot_index %>节 · <%= next.start_time %>–<%= next.end_time %><%= next.classroom ? ' · ' + next.classroom : '' %>
+      </div>
+    </div>
+    <a href="/notes/record?slot=<%= next.id %>" class="btn btn-outline">预习/提前录音</a>
+  <% } else { %>
+    <div>
+      <div style="font-size:16px;font-weight:500;"><%= WEEKDAYS[_todayWd - 1] %> 没有课了</div>
+      <div style="font-size:13px;color:var(--text-muted);margin-top:4px;">休息一下，或前往课表编辑</div>
+    </div>
+  <% } %>
+</div>
+
+<!-- 周课表网格 -->
+<div class="card mt-2" style="overflow-x:auto;">
+  <% if (slots.length === 0) { %>
+    <p class="text-muted text-center" style="padding:40px 0;">还没有课表，<a href="/schedule/edit">点击这里</a> 创建本周课表</p>
+  <% } else { %>
+  <table style="width:100%;border-collapse:collapse;min-width:700px;">
+    <thead>
+      <tr>
+        <th style="padding:8px;border:1px solid #eee;font-weight:600;width:60px;">节</th>
+        <% for (let d = 1; d <= 7; d++) { %>
+          <th style="padding:8px;border:1px solid #eee;font-weight:600;<%= d === _todayWd ? 'background:var(--primary);color:#fff;' : '' %>"><%= WEEKDAYS[d-1] %></th>
+        <% } %>
+      </tr>
+    </thead>
+    <tbody>
+      <% for (let i = 1; i <= slotCount; i++) { %>
+        <tr>
+          <td style="padding:8px;border:1px solid #eee;text-align:center;font-weight:600;background:#fafafa;"><%= i %></td>
+          <% for (let d = 1; d <= 7; d++) { %>
+            <%
+              const s = slotMap[`${d}_${i}`];
+              const isCurrent = current && current.id === s?.id;
+              const isNext = next && next.id === s?.id;
+            %>
+            <td style="padding:6px 8px;border:1px solid #eee;vertical-align:top;<%= isCurrent ? 'background:#dbeafe;' : (isNext ? 'background:#fef9c3;' : '') %>">
+              <% if (s) { %>
+                <div style="font-weight:600;font-size:14px;"><%= s.course_name || '未命名' %></div>
+                <div style="font-size:12px;color:var(--text-muted);margin-top:2px;"><%= s.start_time %>–<%= s.end_time %></div>
+                <% if (s.classroom) { %><div style="font-size:12px;color:var(--text-muted);"><%= s.classroom %></div><% } %>
+                <% if (s.teacher) { %><div style="font-size:12px;color:var(--text-muted);"><%= s.teacher %></div><% } %>
+              <% } else { %>
+                <div style="min-height:50px;"></div>
+              <% } %>
+            </td>
+          <% } %>
+        </tr>
+      <% } %>
+    </tbody>
+  </table>
+  <% } %>
+</div>
+
+<p class="text-muted mt-2" style="font-size:13px;">
+  还没有课程？<a href="/courses/new">先创建课程</a>，再回来填课表。
+</p>

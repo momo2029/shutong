@@ -328,10 +328,11 @@ async function toggleRecord() {
 
   try {
     if (!noteId) {
+      const slotId = new URLSearchParams(location.search).get('slot');
       const res = await fetch('/api/notes', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ title: '网页录音笔记' })
+        body: JSON.stringify({ title: '网页录音笔记', scheduleSlotId: slotId || undefined })
       });
       const data = await res.json();
       if (data.ok) {

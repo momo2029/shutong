@@ -20,8 +20,11 @@ idf_component_register(
         espressif__button
         esp_http_server
         esp_timer
+        esp_https_ota
 )
 
 if(CONFIG_SHUTONG_FLAGSHIP)
     target_compile_definitions(${COMPONENT_LIB} PRIVATE CONFIG_SHUTONG_FLAGSHIP=1)
 endif()
+
+target_compile_definitions(${COMPONENT_LIB} PRIVATE FW_VERSION="${PROJECT_VER}")

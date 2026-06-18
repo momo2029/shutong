@@ -23,15 +23,16 @@ config MQTT_BROKER_URL
 
 config MQTT_USERNAME
     string "MQTT 用户名"
-    default "st_device"
+    default ""
     help
-        MQTT认证用户名。设备使用 st_device，服务端使用 sht_server。
+        开发兼容用固定用户名。生产环境应留空并设置 MQTT_MASTER_KEY，
+        固件会自动生成 device:timestamp:signature 动态用户名。
 
 config MQTT_PASSWORD
     string "MQTT 密码"
     default ""
     help
-        MQTT认证密码。烧录前通过 idf.py menuconfig 设置，不要提交到代码。
+        固定用户名对应密码。生产环境使用动态签名时留空。
 
 config MQTT_MASTER_KEY
     string "MQTT 主密钥"

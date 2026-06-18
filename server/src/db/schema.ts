@@ -35,11 +35,25 @@ export const courses = sqliteTable('courses', {
   createdAt: text('created_at').notNull().default("(datetime('now'))"),
 });
 
+export const scheduleSlots = sqliteTable('schedule_slots', {
+  id: text('id').primaryKey(),
+  userId: text('user_id').notNull().references(() => users.id, { onDelete: 'cascade' }),
+  weekday: integer('weekday').notNull(),        // 1=周一 ... 7=周日
+  slotIndex: integer('slot_index').notNull(),   // 第N节，1-based
+  startTime: text('start_time').notNull(),      // "HH:MM"
+  endTime: text('end_time').notNull(),          // "HH:MM"
+  courseId: text('course_id').references(() => courses.id, { onDelete: 'set null' }),
+  classroom: text('classroom').notNull().default(''),
+  teacher: text('teacher').notNull().default(''),
+  createdAt: text('created_at').notNull().default("(datetime('now'))"),
+});
+
 export const notes = sqliteTable('notes', {
   id: text('id').primaryKey(),
   userId: text('user_id').notNull().references(() => users.id),
   deviceId: text('device_id').references(() => devices.id),
   courseId: text('course_id').references(() => courses.id, { onDelete: 'set null' }),
+  scheduleSlotId: text('schedule_slot_id').references(() => scheduleSlots.id, { onDelete: 'set null' }),
   suggestedCourseId: text('suggested_course_id').references(() => courses.id, { onDelete: 'set null' }),
   title: text('title').notNull().default(''),
   rawTranscript: text('raw_transcript').notNull().default(''),

@@ -33,11 +33,12 @@ typedef enum {
   CMD_REBOOT,
   CMD_CAPTURE,
   CMD_TTS_PLAY,
+  CMD_OTA,
 } device_cmd_t;
 
 typedef struct {
   char version[16];
-  char url[256];
+  char url[512];
   size_t size;
   char sha256[65];
 } ota_info_t;

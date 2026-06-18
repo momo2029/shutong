@@ -3,7 +3,6 @@
 #include <memory>
 #include <freertos/FreeRTOS.h>
 #include <freertos/event_groups.h>
-#include <esp_idf_version.h>
 #include <esp_err.h>
 #include <esp_event.h>
 #include <esp_wifi.h>
@@ -14,31 +13,30 @@
 #include <nvs.h>
 #include <nvs_flash.h>
 #include <cJSON.h>
+#if !CONFIG_IDF_TARGET_ESP32P4
 #include <esp_smartconfig.h>
-#include <esp_timer.h>
+#endif
 #include "ssid_manager.h"
+#include "sdkconfig.h"
 
 #define TAG "WifiConfigurationAp"
 
 #define WIFI_CONNECTED_BIT BIT0
 #define WIFI_FAIL_BIT      BIT1
-
-// Delayed reboot callback (used after WiFi config is saved)
-static void do_reboot(void*) { esp_restart(); }
+#define WIFI_SCAN_DONE_BIT BIT2
 
 extern const char index_html_start[] asm("_binary_wifi_configuration_html_start");
 extern const char done_html_start[] asm("_binary_wifi_configuration_done_html_start");
-
-WifiConfigurationAp& WifiConfigurationAp::GetInstance() {
-    static WifiConfigurationAp instance;
-    return instance;
-}
 
 WifiConfigurationAp::WifiConfigurationAp()
 {
     event_group_ = xEventGroupCreate();
     language_ = "zh-CN";
     sleep_mode_ = false;
+    instance_any_id_ = nullptr;
+    instance_got_ip_ = nullptr;
+    max_tx_power_ = 0;
+    remember_bssid_ = false;
 }
 
 std::vector<wifi_ap_record_t> WifiConfigurationAp::GetAccessPoints()
@@ -49,19 +47,10 @@ std::vector<wifi_ap_record_t> WifiConfigurationAp::GetAccessPoints()
 
 WifiConfigurationAp::~WifiConfigurationAp()
 {
-    if (scan_timer_) {
-        esp_timer_stop(scan_timer_);
-        esp_timer_delete(scan_timer_);
-    }
+    Stop();
     if (event_group_) {
         vEventGroupDelete(event_group_);
-    }
-    // Unregister event handlers if they were registered
-    if (instance_any_id_) {
-        esp_event_handler_instance_unregister(WIFI_EVENT, ESP_EVENT_ANY_ID, instance_any_id_);
-    }
-    if (instance_got_ip_) {
-        esp_event_handler_instance_unregister(IP_EVENT, IP_EVENT_STA_GOT_IP, instance_got_ip_);
+        event_group_ = nullptr;
     }
 }
 
@@ -70,7 +59,17 @@ void WifiConfigurationAp::SetLanguage(const std::string &&language)
     language_ = language;
 }
 
+void WifiConfigurationAp::SetLanguage(const std::string &language)
+{
+    language_ = language;
+}
+
 void WifiConfigurationAp::SetSsidPrefix(const std::string &&ssid_prefix)
+{
+    ssid_prefix_ = ssid_prefix;
+}
+
+void WifiConfigurationAp::SetSsidPrefix(const std::string &ssid_prefix)
 {
     ssid_prefix_ = ssid_prefix;
 }
@@ -91,23 +90,9 @@ void WifiConfigurationAp::Start()
 
     StartAccessPoint();
     StartWebServer();
-    
-    // Start scan immediately
-    esp_wifi_scan_start(nullptr, false);
-    // Setup periodic WiFi scan timer
-    esp_timer_create_args_t timer_args = {
-        .callback = [](void* arg) {
-            auto* self = static_cast<WifiConfigurationAp*>(arg);
-            if (!self->is_connecting_) {
-                esp_wifi_scan_start(nullptr, false);
-            }
-        },
-        .arg = this,
-        .dispatch_method = ESP_TIMER_TASK,
-        .name = "wifi_scan_timer",
-        .skip_unhandled_events = true
-    };
-    ESP_ERROR_CHECK(esp_timer_create(&timer_args, &scan_timer_));
+
+    // No auto-scan: keeps AP stable on a single channel so clients can discover it.
+    // /scan endpoint still works for on-demand scanning in the web UI.
 }
 
 std::string WifiConfigurationAp::GetSsid()
@@ -132,10 +117,10 @@ std::string WifiConfigurationAp::GetWebServerUrl()
 
 void WifiConfigurationAp::StartAccessPoint()
 {
-    // Initialize the TCP/IP stack
-    ESP_ERROR_CHECK(esp_netif_init());
-
-    // Create the default event loop
+    // Note: esp_netif_init() and esp_wifi_init() should be called once before calling this method
+    // WiFi driver is initialized by WifiManager::Initialize() and kept alive
+    
+    // Create the default WiFi AP interface
     ap_netif_ = esp_netif_create_default_wifi_ap();
 
     // Set the router IP address to 192.168.4.1
@@ -146,12 +131,10 @@ void WifiConfigurationAp::StartAccessPoint()
     esp_netif_dhcps_stop(ap_netif_);
     esp_netif_set_ip_info(ap_netif_, &ip_info);
     esp_netif_dhcps_start(ap_netif_);
-    // Start the DNS server
-    dns_server_.Start(ip_info.gw);
 
-    // Initialize the WiFi stack in Access Point mode
-    wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
-    ESP_ERROR_CHECK(esp_wifi_init(&cfg));
+    // Start the DNS server
+    dns_server_ = std::make_unique<DnsServer>();
+    dns_server_->Start(ip_info.gw);
 
     // Get the SSID
     std::string ssid = GetSsid();
@@ -169,14 +152,10 @@ void WifiConfigurationAp::StartAccessPoint()
     ESP_ERROR_CHECK(esp_wifi_set_ps(WIFI_PS_NONE));
     ESP_ERROR_CHECK(esp_wifi_start());
 
-#if ESP_IDF_VERSION_MAJOR >= 5
-    // IDF 5.x drops esp_wifi_set_band_mode
+#ifdef CONFIG_SOC_WIFI_SUPPORT_5G
+    ESP_ERROR_CHECK(esp_wifi_set_band_mode(WIFI_BAND_MODE_AUTO));
 #else
-    #ifdef CONFIG_SOC_WIFI_SUPPORT_5G
-        ESP_ERROR_CHECK(esp_wifi_set_band_mode(WIFI_BAND_MODE_AUTO));
-    #else
-        ESP_ERROR_CHECK(esp_wifi_set_band_mode(WIFI_BAND_MODE_2G_ONLY));
-    #endif
+    ESP_ERROR_CHECK(esp_wifi_set_band_mode(WIFI_BAND_MODE_2G_ONLY));
 #endif
 
     ESP_LOGI(TAG, "Access Point started with SSID %s", ssid.c_str());
@@ -323,6 +302,22 @@ void WifiConfigurationAp::StartWebServer()
         .method = HTTP_GET,
         .handler = [](httpd_req_t *req) -> esp_err_t {
             auto *this_ = static_cast<WifiConfigurationAp *>(req->user_ctx);
+
+            // 按需扫描，避免配网页面打开期间后台扫描频繁切换 SoftAP 信道。
+            if (!this_->is_connecting_) {
+                xEventGroupClearBits(this_->event_group_, WIFI_SCAN_DONE_BIT);
+                esp_err_t scan_err = esp_wifi_scan_start(nullptr, false);
+                if (scan_err == ESP_OK) {
+                    xEventGroupWaitBits(this_->event_group_,
+                                        WIFI_SCAN_DONE_BIT,
+                                        pdFALSE,
+                                        pdFALSE,
+                                        pdMS_TO_TICKS(6000));
+                } else {
+                    ESP_LOGW(TAG, "WiFi scan start failed: %s", esp_err_to_name(scan_err));
+                }
+            }
+
             std::lock_guard<std::mutex> lock(this_->mutex_);
 
             // Check if 5G is supported
@@ -423,20 +418,6 @@ void WifiConfigurationAp::StartWebServer()
             httpd_resp_set_type(req, "application/json");
             httpd_resp_set_hdr(req, "Connection", "close");
             httpd_resp_send(req, "{\"success\":true}", HTTPD_RESP_USE_STRLEN);
-
-            // 延迟500ms重启
-            esp_timer_create_args_t timer_args = {
-                .callback = do_reboot,
-                .arg = NULL,
-                .dispatch_method = ESP_TIMER_TASK,
-                .name = "reboot_timer",
-                .skip_unhandled_events = false
-            };
-            esp_timer_handle_t reboot_timer;
-            if (esp_timer_create(&timer_args, &reboot_timer) == ESP_OK) {
-                esp_timer_start_once(reboot_timer, 500000);
-            }
-
             return ESP_OK;
         },
         .user_ctx = this
@@ -456,9 +437,9 @@ void WifiConfigurationAp::StartWebServer()
     };
     ESP_ERROR_CHECK(httpd_register_uri_handler(server_, &done_html));
 
-    // Register the reboot endpoint
-    httpd_uri_t reboot = {
-        .uri = "/reboot",
+    // Register the exit endpoint - exits config mode without rebooting
+    httpd_uri_t exit_config = {
+        .uri = "/exit",
         .method = HTTP_POST,
         .handler = [](httpd_req_t *req) -> esp_err_t {
             auto* this_ = static_cast<WifiConfigurationAp*>(req->user_ctx);
@@ -470,27 +451,25 @@ void WifiConfigurationAp::StartWebServer()
             // 发送响应
             httpd_resp_send(req, "{\"success\":true}", HTTPD_RESP_USE_STRLEN);
             
-            // 创建一个延迟重启任务
-            ESP_LOGI(TAG, "Rebooting...");
+            // 延迟调用回调，确保HTTP响应完全发送
+            ESP_LOGI(TAG, "Exiting config mode...");
             xTaskCreate([](void *ctx) {
                 // 等待200ms确保HTTP响应完全发送
                 vTaskDelay(pdMS_TO_TICKS(200));
-                // 停止Web服务器
+                
                 auto* self = static_cast<WifiConfigurationAp*>(ctx);
-                if (self->server_) {
-                    httpd_stop(self->server_);
+                // 通知回调退出配网模式
+                if (self->on_exit_requested_) {
+                    self->on_exit_requested_();
                 }
-                // 再等待100ms确保所有连接都已关闭
-                vTaskDelay(pdMS_TO_TICKS(100));
-                // 执行重启
-                esp_restart();
-            }, "reboot_task", 4096, this_, 5, NULL);
+                vTaskDelete(NULL);
+            }, "exit_config_task", 4096, this_, 5, NULL);
             
             return ESP_OK;
         },
         .user_ctx = this
     };
-    ESP_ERROR_CHECK(httpd_register_uri_handler(server_, &reboot));
+    ESP_ERROR_CHECK(httpd_register_uri_handler(server_, &exit_config));
 
     auto captive_portal_handler = [](httpd_req_t *req) -> esp_err_t {
         auto *this_ = static_cast<WifiConfigurationAp *>(req->user_ctx);
@@ -550,6 +529,8 @@ void WifiConfigurationAp::StartWebServer()
             cJSON_AddNumberToObject(json, "max_tx_power", this_->max_tx_power_);
             cJSON_AddBoolToObject(json, "remember_bssid", this_->remember_bssid_);
             cJSON_AddBoolToObject(json, "sleep_mode", this_->sleep_mode_);
+            cJSON_AddBoolToObject(json, "show_ota_config", this_->show_ota_config_);
+            cJSON_AddBoolToObject(json, "show_sleep_config", this_->show_sleep_config_);
 
             // 发送JSON响应
             char *json_str = cJSON_PrintUnformatted(json);
@@ -709,35 +690,112 @@ bool WifiConfigurationAp::ConnectToWifi(const std::string &ssid, const std::stri
     }
     
     is_connecting_ = true;
-    esp_wifi_scan_stop();
-    xEventGroupClearBits(event_group_, WIFI_CONNECTED_BIT | WIFI_FAIL_BIT);
 
-    wifi_config_t wifi_config;
-    bzero(&wifi_config, sizeof(wifi_config));
-    strlcpy((char *)wifi_config.sta.ssid, ssid.c_str(), 32);
-    strlcpy((char *)wifi_config.sta.password, password.c_str(), 64);
-    wifi_config.sta.scan_method = WIFI_ALL_CHANNEL_SCAN;
-    wifi_config.sta.failure_retry_cnt = 1;
-    
-    ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, &wifi_config));
-    auto ret = esp_wifi_connect();
-    if (ret != ESP_OK) {
-        ESP_LOGE(TAG, "Failed to connect to WiFi: %d", ret);
-        is_connecting_ = false;
-        return false;
+    // Upper-level retry loop with delay between attempts.
+    //
+    // Background: in APSTA mode the captive-portal session is on the AP
+    // beacon channel (typically 1), and the target home AP is on some
+    // other channel (e.g. 10). When ConnectToWifi triggers, esp-wifi
+    // performs a Channel Switch Announcement to move both AP and STA to
+    // the home AP's channel, then immediately issues an association
+    // request. The home AP frequently responds with "Association
+    // Response status=30 (Refused Temporarily)" + a Comeback Time in
+    // TUs (= ~1.1s for Buffalo routers, observed) because its own
+    // state hasn't settled yet for the new station.
+    //
+    // The ESP-IDF wifi driver's failure_retry_cnt issues re-association
+    // attempts back-to-back (within a few ms) and does not honor the
+    // 802.11 Comeback Time, so every driver-internal retry is refused
+    // the same way and the first ConnectToWifi() call returns failure.
+    // By the time the user clicks "submit" a second time (~8s later)
+    // the AP has fully settled and association succeeds on the first
+    // try — which is why users observe "it always fails the first
+    // time, then works".
+    //
+    // Fix: when an attempt fails, wait long enough for the comeback
+    // timer + AP state settle (~3s is safe), then retry once. This
+    // produces a single user-visible success path instead of forcing
+    // the user to resubmit. The driver-internal retries (set below
+    // via failure_retry_cnt) are kept as a secondary safety net.
+    constexpr int kMaxAttempts = 2;
+    constexpr int kRetryDelayMs = 3000;
+    bool connected = false;
+
+    for (int attempt = 1; attempt <= kMaxAttempts && !connected; ++attempt) {
+        if (attempt > 1) {
+            ESP_LOGI(TAG,
+                "WiFi attempt %d/%d after %d ms delay "
+                "(waiting for AP comeback timer + state settle)",
+                attempt, kMaxAttempts, kRetryDelayMs);
+            vTaskDelay(pdMS_TO_TICKS(kRetryDelayMs));
+        }
+
+        xEventGroupClearBits(event_group_, WIFI_CONNECTED_BIT | WIFI_FAIL_BIT);
+        esp_wifi_scan_stop();
+
+        wifi_config_t wifi_config;
+        bzero(&wifi_config, sizeof(wifi_config));
+        strlcpy((char *)wifi_config.sta.ssid, ssid.c_str(), 32);
+        strlcpy((char *)wifi_config.sta.password, password.c_str(), 64);
+        wifi_config.sta.scan_method = WIFI_ALL_CHANNEL_SCAN;
+        wifi_config.sta.failure_retry_cnt = 1;
+
+        ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, &wifi_config));
+        auto ret = esp_wifi_connect();
+        if (ret != ESP_OK) {
+            ESP_LOGE(TAG,
+                "esp_wifi_connect failed: %d (attempt %d/%d)",
+                ret, attempt, kMaxAttempts);
+            continue;
+        }
+        ESP_LOGI(TAG, "Connecting to WiFi %s (attempt %d/%d)",
+            ssid.c_str(), attempt, kMaxAttempts);
+
+        // Wait for the connection to complete for 10 or 25 seconds.
+        EventBits_t bits = xEventGroupWaitBits(
+            event_group_,
+            WIFI_CONNECTED_BIT | WIFI_FAIL_BIT,
+            pdTRUE,
+            pdFALSE,
+#ifdef CONFIG_SOC_WIFI_SUPPORT_5G
+            pdMS_TO_TICKS(25000)
+#else
+            pdMS_TO_TICKS(10000)
+#endif
+        );
+
+        if (bits & WIFI_CONNECTED_BIT) {
+            connected = true;
+        } else {
+            const bool timed_out = (bits == 0);
+            if (timed_out) {
+                // Timeout — neither WIFI_CONNECTED_BIT nor WIFI_FAIL_BIT
+                // was set, so WIFI_EVENT_STA_DISCONNECTED has not fired
+                // and the driver may still be in `connecting` state.
+                // Cancel the in-flight attempt explicitly before the
+                // retry delay; without this the next esp_wifi_connect()
+                // can return ESP_ERR_WIFI_STATE on a connecting-state
+                // driver (per esp_wifi.h attention 3), making the retry
+                // a no-op on slow / event-dropping APs.
+                esp_wifi_disconnect();
+            }
+            ESP_LOGW(TAG,
+                "Attempt %d/%d %s%s",
+                attempt, kMaxAttempts,
+                timed_out ? "timed out (driver may still be connecting)" : "failed",
+                attempt < kMaxAttempts ? " — will retry" : "");
+        }
     }
-    ESP_LOGI(TAG, "Connecting to WiFi %s", ssid.c_str());
-
-    // Wait for the connection to complete for 5 seconds
-    EventBits_t bits = xEventGroupWaitBits(event_group_, WIFI_CONNECTED_BIT | WIFI_FAIL_BIT, pdTRUE, pdFALSE, pdMS_TO_TICKS(10000));
     is_connecting_ = false;
 
-    if (bits & WIFI_CONNECTED_BIT) {
+    if (connected) {
         ESP_LOGI(TAG, "Connected to WiFi %s", ssid.c_str());
         esp_wifi_disconnect();
         return true;
     } else {
-        ESP_LOGE(TAG, "Failed to connect to WiFi %s", ssid.c_str());
+        ESP_LOGE(TAG,
+            "Failed to connect to WiFi %s after %d attempts",
+            ssid.c_str(), kMaxAttempts);
         return false;
     }
 }
@@ -746,6 +804,11 @@ void WifiConfigurationAp::Save(const std::string &ssid, const std::string &passw
 {
     ESP_LOGI(TAG, "Save SSID %s %d", ssid.c_str(), ssid.length());
     SsidManager::GetInstance().AddSsid(ssid, password);
+}
+
+void WifiConfigurationAp::OnExitRequested(std::function<void()> callback)
+{
+    on_exit_requested_ = callback;
 }
 
 void WifiConfigurationAp::WifiEventHandler(void* arg, esp_event_base_t event_base, int32_t event_id, void* event_data)
@@ -757,8 +820,6 @@ void WifiConfigurationAp::WifiEventHandler(void* arg, esp_event_base_t event_bas
     } else if (event_id == WIFI_EVENT_AP_STADISCONNECTED) {
         wifi_event_ap_stadisconnected_t* event = (wifi_event_ap_stadisconnected_t*) event_data;
         ESP_LOGI(TAG, "Station " MACSTR " left, AID=%d", MAC2STR(event->mac), event->aid);
-    } else if (event_id == WIFI_EVENT_STA_CONNECTED) {
-        xEventGroupSetBits(self->event_group_, WIFI_CONNECTED_BIT);
     } else if (event_id == WIFI_EVENT_STA_DISCONNECTED) {
         xEventGroupSetBits(self->event_group_, WIFI_FAIL_BIT);
     } else if (event_id == WIFI_EVENT_SCAN_DONE) {
@@ -768,9 +829,12 @@ void WifiConfigurationAp::WifiEventHandler(void* arg, esp_event_base_t event_bas
 
         self->ap_records_.resize(ap_num);
         esp_wifi_scan_get_ap_records(&ap_num, self->ap_records_.data());
+        xEventGroupSetBits(self->event_group_, WIFI_SCAN_DONE_BIT);
 
-        // 扫描完成，等待10秒后再次扫描
-        esp_timer_start_once(self->scan_timer_, 10 * 1000000);
+        // 扫描完成，等待10秒后再次扫描（timer disabled: AP stays on one channel）
+        if (self->scan_timer_) {
+            esp_timer_start_once(self->scan_timer_, 10 * 1000000);
+        }
     }
 }
 
@@ -784,6 +848,7 @@ void WifiConfigurationAp::IpEventHandler(void* arg, esp_event_base_t event_base,
     }
 }
 
+#if !CONFIG_IDF_TARGET_ESP32P4
 void WifiConfigurationAp::StartSmartConfig()
 {
     // 注册SmartConfig事件处理器
@@ -823,11 +888,16 @@ void WifiConfigurationAp::SmartConfigEventHandler(void *arg, esp_event_base_t ev
             ESP_LOGI(TAG, "SmartConfig SSID: %s, Password: %s", ssid, password);
             // 尝试连接WiFi会失败，故不连接
             self->Save(ssid, password);
+            // 延迟退出配网模式
             xTaskCreate([](void *ctx){
-                ESP_LOGI(TAG, "Restarting in 3 second");
-                vTaskDelay(pdMS_TO_TICKS(3000));
-                esp_restart();
-            }, "restart_task", 4096, NULL, 5, NULL);
+                ESP_LOGI(TAG, "Exiting config mode in 1 second");
+                vTaskDelay(pdMS_TO_TICKS(1000));
+                auto* self = static_cast<WifiConfigurationAp*>(ctx);
+                if (self->on_exit_requested_) {
+                    self->on_exit_requested_();
+                }
+                vTaskDelete(NULL);
+            }, "exit_config_task", 4096, self, 5, NULL);
             break;
         }
         case SC_EVENT_SEND_ACK_DONE:
@@ -837,14 +907,17 @@ void WifiConfigurationAp::SmartConfigEventHandler(void *arg, esp_event_base_t ev
         }
     }
 }
+#endif // !CONFIG_IDF_TARGET_ESP32P4
 
 void WifiConfigurationAp::Stop() {
+#if !CONFIG_IDF_TARGET_ESP32P4
     // 停止SmartConfig服务
     if (sc_event_instance_) {
         esp_event_handler_instance_unregister(SC_EVENT, ESP_EVENT_ANY_ID, sc_event_instance_);
         sc_event_instance_ = nullptr;
     }
     esp_smartconfig_stop();
+#endif
 
     // 停止定时器
     if (scan_timer_) {
@@ -860,7 +933,10 @@ void WifiConfigurationAp::Stop() {
     }
 
     // 停止DNS服务器
-    dns_server_.Stop();
+    if (dns_server_) {
+        dns_server_->Stop();
+        dns_server_.reset();
+    }
 
     // 注销事件处理器
     if (instance_any_id_) {
@@ -872,14 +948,12 @@ void WifiConfigurationAp::Stop() {
         instance_got_ip_ = nullptr;
     }
 
-    // 停止WiFi并重置模式
+    // 停止WiFi（但不 deinit，WiFi 驱动由 WifiManager 管理）
     esp_wifi_stop();
-    esp_wifi_deinit();
-    esp_wifi_set_mode(WIFI_MODE_NULL);
-
-    // 释放网络接口资源
+    
+    // 销毁网络接口
     if (ap_netif_) {
-        esp_netif_destroy(ap_netif_);
+        esp_netif_destroy_default_wifi(ap_netif_);
         ap_netif_ = nullptr;
     }
 

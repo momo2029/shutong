@@ -10,11 +10,11 @@
 #include "driver/gpio.h"
 #include "cJSON.h"
 #include "mbedtls/base64.h"
+#include "esp_https_ota.h"
 #include <sys/stat.h>
 
 // Xiaozhi WiFi + Button
-#include <wifi_station.h>
-#include <wifi_configuration_ap.h>
+#include <wifi_manager.h>
 #include <ssid_manager.h>
 #include "button.h"
 
@@ -53,7 +53,7 @@ static int16_t *s_record_buf = NULL;
 
 static device_info_t s_dev_info = {
   .sn = CONFIG_SHUTONG_SN,
-  .fw_ver = "1.0.0",
+  .fw_ver = FW_VERSION,
   .battery = 100,
   .wifi_rssi = 0,
 };
@@ -290,8 +290,8 @@ static void capture_task(void *arg) {
 static void heartbeat_task(void *arg) {
   while (1) {
     vTaskDelay(pdMS_TO_TICKS(30000));
-    if (WifiStation::GetInstance().IsConnected() && shutong_mqtt_is_connected()) {
-      s_dev_info.wifi_rssi = WifiStation::GetInstance().GetRssi();
+    if (WifiManager::GetInstance().IsConnected() && shutong_mqtt_is_connected()) {
+      s_dev_info.wifi_rssi = WifiManager::GetInstance().GetRssi();
       cJSON *json = proto_build_status(&s_dev_info);
       char *str = cJSON_PrintUnformatted(json);
       shutong_mqtt_publish("status", str);
@@ -403,6 +403,42 @@ static void on_mqtt_cmd(const char *type, const char *payload_json, const char *
         }
         break;
 
+      case CMD_OTA:
+        ESP_LOGI(TAG, "CMD: ota");
+        {
+          ota_info_t ota = {};
+          if (proto_parse_ota(json, &ota) == 0 && ota.url[0]) {
+            ESP_LOGI(TAG, "OTA download: %s -> %s", ota.version, ota.url);
+            cJSON *ack = proto_build_cmd_ack(ref, "ota_started", NULL);
+            char *str = cJSON_PrintUnformatted(ack);
+            shutong_mqtt_publish("cmd/ack", str);
+            cJSON_free(str);
+            cJSON_Delete(ack);
+
+            esp_http_client_config_t http_cfg = {};
+            http_cfg.url = ota.url;
+            http_cfg.timeout_ms = 120000;
+            http_cfg.buffer_size = 4096;
+            esp_https_ota_config_t ota_cfg = {};
+            ota_cfg.http_config = &http_cfg;
+
+            esp_err_t ret = esp_https_ota(&ota_cfg);
+            if (ret == ESP_OK) {
+              ESP_LOGI(TAG, "OTA success, rebooting...");
+              vTaskDelay(pdMS_TO_TICKS(1000));
+              esp_restart();
+            } else {
+              ESP_LOGE(TAG, "OTA failed: 0x%x", ret);
+              ack = proto_build_cmd_ack(ref, "ota_failed", "Download failed");
+              str = cJSON_PrintUnformatted(ack);
+              shutong_mqtt_publish("cmd/ack", str);
+              cJSON_free(str);
+              cJSON_Delete(ack);
+            }
+          }
+        }
+        break;
+
       default:
         ESP_LOGW(TAG, "Unknown cmd");
         break;
@@ -453,6 +489,7 @@ extern "C" void app_main(void) {
   // 音频
   shutong_audio_init();
   shutong_speaker_init();
+  shutong_speaker_play_boot();  // 开机提示音
 
   // 录音缓冲区 — 用内部 DRAM 避免 PSRAM 缓存一致性问题
   s_record_buf = (int16_t *)calloc(AUDIO_CHUNK_SAMPLES, sizeof(int16_t));
@@ -484,37 +521,61 @@ extern "C" void app_main(void) {
   shutong_camera_init();
   sensor_t *s = esp_camera_sensor_get();
   if (s) {
-    s->set_framesize(s, FRAMESIZE_VGA);
-    s->set_quality(s, 15);
-    ESP_LOGI(TAG, "Camera set to VGA quality=15");
+    s->set_framesize(s, FRAMESIZE_XGA);
+    s->set_quality(s, 8);
+    ESP_LOGI(TAG, "Camera set to XGA quality=8");
   }
 #endif
 
-  // WiFi
-  auto &ssid_mgr = SsidManager::GetInstance();
-  auto &station = WifiStation::GetInstance();
-  auto &ap = WifiConfigurationAp::GetInstance();
+  // WiFi — reference: https://github.com/78/esp-wifi-connect
+  auto &wifi = WifiManager::GetInstance();
+
+  WifiManagerConfig wifi_cfg;
+  wifi_cfg.ssid_prefix = "shutong";
+  wifi_cfg.language = "zh-CN";
+  wifi.Initialize(wifi_cfg);
+
+  EventGroupHandle_t wifi_events = xEventGroupCreate();
+  wifi.SetEventCallback([wifi_events](WifiEvent e, const std::string& data) {
+    if (e == WifiEvent::Connected) xEventGroupSetBits(wifi_events, BIT0);
+    if (e == WifiEvent::ConfigModeExit) xEventGroupSetBits(wifi_events, BIT1);
+  });
 
   while (true) {
-    auto ssid_list = ssid_mgr.GetSsidList();
-    if (!ssid_list.empty()) {
-      station.Start();
-      if (station.WaitForConnected(15000)) {
-        ESP_LOGI(TAG, "WiFi connected: %s", station.GetSsid().c_str());
-        break;
-      }
-      ESP_LOGW(TAG, "Saved WiFi failed, opening AP for 60s...");
-      station.Stop();
-    } else {
-      ESP_LOGW(TAG, "No saved WiFi, opening AP for 60s...");
+    if (SsidManager::GetInstance().GetSsidList().empty()) {
+      // No saved credentials — open AP and wait for user config
+      ESP_LOGW(TAG, "No saved WiFi, opening AP...");
+      xEventGroupClearBits(wifi_events, BIT0 | BIT1);
+      wifi.StartConfigAp();
+      shutong_speaker_play_ap_mode();
+      ESP_LOGI(TAG, "AP: %s → %s", wifi.GetApSsid().c_str(), wifi.GetApWebUrl().c_str());
+
+      xEventGroupWaitBits(wifi_events, BIT1, pdTRUE, pdFALSE, portMAX_DELAY);
+      ESP_LOGI(TAG, "Config done, trying station...");
+      continue;
     }
 
-    ap.SetSsidPrefix("shutong");
-    ap.Start();
-    ESP_LOGI(TAG, "AP mode: SSID=%s, URL=%s", ap.GetSsid().c_str(), ap.GetWebServerUrl().c_str());
-    vTaskDelay(pdMS_TO_TICKS(60000));
-    ap.Stop();
+    // Have saved credentials — try station mode
+    xEventGroupClearBits(wifi_events, BIT0 | BIT1);
+    wifi.StartStation();
+    EventBits_t bits = xEventGroupWaitBits(wifi_events, BIT0 | BIT1, pdFALSE, pdFALSE, pdMS_TO_TICKS(15000));
+    if (bits & BIT0) {
+      ESP_LOGI(TAG, "WiFi connected: %s", wifi.GetSsid().c_str());
+      shutong_speaker_play_wifi_connected();
+      break;
+    }
+
+    // Connection failed — fall back to AP
+    ESP_LOGW(TAG, "Connection failed, opening AP...");
+    xEventGroupClearBits(wifi_events, BIT1);
+    wifi.StartConfigAp();
+    shutong_speaker_play_ap_mode();
+    ESP_LOGI(TAG, "AP: %s → %s", wifi.GetApSsid().c_str(), wifi.GetApWebUrl().c_str());
+
+    xEventGroupWaitBits(wifi_events, BIT1, pdTRUE, pdFALSE, portMAX_DELAY);
   }
+
+  vEventGroupDelete(wifi_events);
 
   // MQTT 初始化
   shutong_mqtt_init(CONFIG_SHUTONG_SN, CONFIG_MQTT_BROKER_URL, on_mqtt_cmd);
@@ -528,7 +589,7 @@ extern "C" void app_main(void) {
   xTaskCreate(capture_task, "capture", 16384, NULL, 2, NULL);
 
   vTaskDelay(pdMS_TO_TICKS(3000));
-  s_dev_info.wifi_rssi = station.GetRssi();
+  s_dev_info.wifi_rssi = wifi.GetRssi();
   cJSON *json = proto_build_status(&s_dev_info);
   char *str = cJSON_PrintUnformatted(json);
   shutong_mqtt_publish("status", str);

@@ -1,5 +1,5 @@
 import mqtt from 'mqtt';
-import { createHmac, timingSafeEqual } from 'crypto';
+import { createHmac } from 'crypto';
 import { getEnv } from '../config.js';
 import { raw, db } from '../db/index.js';
 import { devices, notes, noteImages } from '../db/schema.js';
@@ -11,6 +11,7 @@ import { join } from 'path';
 import { uploadFile } from './storage.js';
 import { transcribe } from './asr.js';
 import { createShortLink } from './shortlink.js';
+import { normalizeDeviceSn, verifyDeviceUsername } from '../utils/deviceAuth.js';
 
 let client: mqtt.MqttClient | null = null;
 const verifiedDeviceClientIds = new Set<string>();
@@ -24,9 +25,6 @@ const viewingNotes = new Map<string, number>();
 const AUDIO_DIR = join(process.cwd(), 'data', 'audio');
 const IMAGE_DIR = join(process.cwd(), 'data', 'images');
 const CHUNKS_DIR = join(process.cwd(), 'data', 'chunks');
-const DEVICE_USERNAME_SKEW_SECONDS = 300;
-const DEVICE_RELATIVE_TIMESTAMP_MAX_SECONDS = 24 * 60 * 60;
-const DEVICE_UNIX_TIMESTAMP_THRESHOLD_SECONDS = 1_000_000_000;
 
 function ensureDir(dir: string) {
   if (!existsSync(dir)) {
@@ -217,7 +215,7 @@ export function initMQTT() {
   }
 
   const opts: mqtt.IClientOptions = {
-    clientId: 'sht_svr',
+    clientId: 'sht_server',
     clean: false,
   };
   if (env.MQTT_USER) {
@@ -275,7 +273,7 @@ async function handleClientConnected(data: Record<string, unknown>) {
     return;
   }
 
-  if (clientid === 'sht_svr') {
+  if (clientid === 'sht_server' || clientid === 'sht_svr') {
     return;
   }
 
@@ -286,7 +284,7 @@ async function handleClientConnected(data: Record<string, unknown>) {
 
     // If using default credentials, send personalized credentials
     if (result.type === 'fixed' && username === 'st_device') {
-      const sn = clientid.startsWith('st_') ? clientid.substring(3) : clientid;
+      const sn = normalizeDeviceSn(clientid);
       sendPersonalizedCredentials(sn).catch(err => {
         console.error(`[MQTT] Failed to send credentials to ${sn}:`, err);
       });
@@ -300,72 +298,6 @@ async function handleClientConnected(data: Record<string, unknown>) {
   if (!disconnectResult.ok) {
     console.warn(`[MQTT] Unauthorized client may remain connected: ${clientid}, reason=${disconnectResult.reason}`);
   }
-}
-
-function verifyDeviceUsername(username: string | undefined, clientid: string): { ok: true; type: string } | { ok: false; reason: string } {
-  if (!username) {
-    return { ok: false, reason: 'missing_username' };
-  }
-
-  // Support fixed username format: st_device or st_{SN}
-  if (username === 'st_device' || username.startsWith('st_')) {
-    return { ok: true, type: 'fixed' };
-  }
-
-  // Dynamic authentication format: type:timestamp:signature
-  const parts = username.split(':');
-  if (parts.length !== 3) {
-    return { ok: false, reason: 'invalid_username_format' };
-  }
-
-  const [type, timestampText, signature] = parts;
-  if (!type || !timestampText || !signature) {
-    return { ok: false, reason: 'invalid_username_format' };
-  }
-
-  const timestamp = Number(timestampText);
-  if (!Number.isInteger(timestamp)) {
-    return { ok: false, reason: 'invalid_timestamp' };
-  }
-  if (timestamp < 0) {
-    return { ok: false, reason: 'invalid_timestamp' };
-  }
-
-  if (timestamp < DEVICE_UNIX_TIMESTAMP_THRESHOLD_SECONDS) {
-    if (timestamp > DEVICE_RELATIVE_TIMESTAMP_MAX_SECONDS) {
-      return { ok: false, reason: 'relative_timestamp_out_of_range' };
-    }
-  } else {
-    const now = Math.floor(Date.now() / 1000);
-    if (Math.abs(now - timestamp) > DEVICE_USERNAME_SKEW_SECONDS) {
-      return { ok: false, reason: 'timestamp_out_of_range' };
-    }
-  }
-
-  const masterKey = getEnv().DEVICE_MASTER_KEY;
-  if (!masterKey) {
-    return { ok: false, reason: 'missing_device_master_key' };
-  }
-
-  const sn = clientid.startsWith('st_') ? clientid.substring(3) : clientid;
-  const payload = `${type}|${timestampText}|${sn}`;
-  const expected = createHmac('sha256', masterKey)
-    .update(payload)
-    .digest('base64')
-    .replace(/\+/g, '-')
-    .replace(/\//g, '_')
-    .replace(/=+$/, '');
-  if (!safeEqual(signature, expected)) {
-    return { ok: false, reason: 'signature_mismatch' };
-  }
-
-  return { ok: true, type };
-}
-
-function safeEqual(a: string, b: string): boolean {
-  const aBuffer = Buffer.from(a);
-  const bBuffer = Buffer.from(b);
-  return aBuffer.length === bBuffer.length && timingSafeEqual(aBuffer, bBuffer);
 }
 
 async function disconnectClient(clientid: string): Promise<{ ok: true } | { ok: false; reason: string }> {
@@ -425,14 +357,14 @@ function getEmqxApiBase(mqttBroker: string): string {
 }
 
 async function handleMessage(sn: string, type: string, data: Record<string, unknown>) {
-  const expectedClientid = `st_${sn}`;
+  const expectedClientIds = [sn, `st_${sn}`];
 
   // Auto-verify: if device exists in database, trust it
-  if (!verifiedDeviceClientIds.has(expectedClientid)) {
+  if (!expectedClientIds.some(id => verifiedDeviceClientIds.has(id))) {
     const dev = db.select().from(devices).where(eq(devices.sn, sn)).get();
     if (dev) {
-      verifiedDeviceClientIds.add(expectedClientid);
-      console.log(`[MQTT] Device auto-verified: ${expectedClientid}`);
+      verifiedDeviceClientIds.add(sn);
+      console.log(`[MQTT] Device auto-verified: ${sn}`);
     } else {
       console.log(`[MQTT] Unknown device, ignoring: sn=${sn}`);
       return;

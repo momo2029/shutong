@@ -4,6 +4,8 @@ import { users } from '../db/schema.js';
 import { eq } from 'drizzle-orm';
 import { snowflake } from '../utils/snowflake.js';
 import { signJWT } from '../utils/jwt.js';
+import { comparePassword } from '../utils/hash.js';
+import { getEnv } from '../config.js';
 
 const WX_BASE = 'https://wx.3198.net';
 const app = new Hono();
@@ -14,11 +16,10 @@ app.post('/login', async (c) => {
   if (!email || !password) return c.json({ error: '缺少邮箱或密码' }, 400);
 
   const u = db.select().from(users).where(eq(users.email, email)).get();
-  if (!u) return c.json({ error: '用户不存在' }, 404);
+  if (!u) return c.json({ error: '邮箱或密码错误' }, 401);
 
-  const bcrypt = await import('bcryptjs');
-  if (!bcrypt.compareSync(password, u.passwordHash)) {
-    return c.json({ error: '密码错误' }, 401);
+  if (!await comparePassword(password, u.passwordHash)) {
+    return c.json({ error: '邮箱或密码错误' }, 401);
   }
 
   const token = await signJWT({ sub: u.id });
@@ -64,8 +65,8 @@ app.post('/wechat/verify', async (c) => {
   let user = db.select().from(users).where(eq(users.email, email)).get();
 
   if (!user) {
-    // 第一个扫码登录的用户 = 管理员
-    const isFirst = db.select().from(users).all().length === 0;
+    // 开发环境可允许首个扫码用户成为管理员，生产环境必须显式初始化管理员。
+    const isFirst = getEnv().ALLOW_FIRST_USER_ADMIN && db.select().from(users).all().length === 0;
     const id = snowflake();
     db.insert(users).values({
       id,

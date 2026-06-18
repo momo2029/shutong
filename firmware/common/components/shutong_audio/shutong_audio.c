@@ -14,6 +14,11 @@ static i2s_chan_handle_t s_rx_chan = NULL;
 static int16_t *s_audio_buf = NULL;
 static volatile size_t s_write_pos = 0;
 
+// DC tracking: exponential moving average for DC offset removal
+static int32_t s_dc_avg = 0;
+#define DC_ALPHA 16  // smoothing factor (1/16 ≈ 0.06)
+#define GAIN_SHIFT 3  // 3-bit left shift = 8x gain
+
 // DFR1154 PDM microphone pins
 #define PDM_CLK   GPIO_NUM_38
 #define PDM_DATA  GPIO_NUM_39
@@ -50,7 +55,6 @@ void shutong_audio_init(void) {
 int shutong_audio_read(int16_t *buf, int samples) {
   if (!s_rx_chan) return 0;
   size_t bytes_read = 0;
-  // PDM RX outputs 16-bit samples directly
   int collected = 0;
   while (collected < samples) {
     int chunk = samples - collected;
@@ -58,7 +62,16 @@ int shutong_audio_read(int16_t *buf, int samples) {
     i2s_channel_read(s_rx_chan, buf + collected, chunk * 2, &bytes_read, portMAX_DELAY);
     int read = bytes_read / 2;
     for (int i = 0; i < read; i++) {
-      s_audio_buf[s_write_pos % (AUDIO_BUF_SIZE / 2)] = buf[collected + i];
+      int16_t raw = buf[collected + i];
+      // Exponential moving average for DC tracking
+      s_dc_avg = s_dc_avg + ((int32_t)raw - s_dc_avg) / DC_ALPHA;
+      // Remove DC and apply software gain
+      int32_t ac = (int32_t)raw - s_dc_avg;
+      int32_t amp = ac << GAIN_SHIFT;
+      if (amp > 32767) amp = 32767;
+      if (amp < -32768) amp = -32768;
+      buf[collected + i] = (int16_t)amp;
+      s_audio_buf[s_write_pos % (AUDIO_BUF_SIZE / 2)] = (int16_t)amp;
       s_write_pos++;
     }
     collected += read;
@@ -70,9 +83,11 @@ bool shutong_audio_has_voice(const int16_t *buf, int samples) {
   if (samples <= 0) return false;
   int64_t sum = 0;
   for (int i = 0; i < samples; i++) {
-    sum += buf[i] >= 0 ? buf[i] : -buf[i];
+    int32_t v = buf[i];
+    sum += v >= 0 ? v : -v;
   }
-  return (sum / samples) > 800;
+  // After DC removal + 8x gain, silence ~0, speech > 400
+  return (sum / samples) > 200;
 }
 
 size_t shutong_audio_buffer_available(void) {

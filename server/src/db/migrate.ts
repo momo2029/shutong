@@ -105,4 +105,30 @@ try {
   // column already exists, ignore
 }
 
+// 课表 slots 表
+raw.exec(`
+  CREATE TABLE IF NOT EXISTS schedule_slots (
+    id TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    weekday INTEGER NOT NULL,
+    slot_index INTEGER NOT NULL,
+    start_time TEXT NOT NULL,
+    end_time TEXT NOT NULL,
+    course_id TEXT REFERENCES courses(id) ON DELETE SET NULL,
+    classroom TEXT NOT NULL DEFAULT '',
+    teacher TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+  );
+  CREATE INDEX IF NOT EXISTS idx_schedule_user ON schedule_slots(user_id);
+  CREATE INDEX IF NOT EXISTS idx_schedule_weekday ON schedule_slots(weekday);
+`);
+
+// notes 追加 schedule_slot_id 列
+try {
+  raw.exec(`ALTER TABLE notes ADD COLUMN schedule_slot_id TEXT REFERENCES schedule_slots(id) ON DELETE SET NULL;`);
+  console.log('Migration: added schedule_slot_id column to notes');
+} catch (_e) {
+  // 列已存在，忽略
+}
+
 console.log('Migration done: all tables created');

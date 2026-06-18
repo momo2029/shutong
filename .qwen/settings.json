@@ -16,7 +16,8 @@
       "Agent(Explore)",
       "Bash(git rm *)",
       "Bash(npm run *)",
-      "Bash(strings)"
+      "Bash(strings)",
+      "Bash(convert *)"
     ]
   },
   "$version": 4

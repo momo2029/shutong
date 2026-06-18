@@ -164,20 +164,29 @@ device_cmd_t proto_parse_cmd(cJSON *json, char *ref_msg_id, size_t id_len) {
   if (strcmp(cmd->valuestring, "reboot") == 0) return CMD_REBOOT;
   if (strcmp(cmd->valuestring, "capture") == 0) return CMD_CAPTURE;
   if (strcmp(cmd->valuestring, "tts_play") == 0) return CMD_TTS_PLAY;
+  if (strcmp(cmd->valuestring, "ota") == 0) return CMD_OTA;
   return CMD_NONE;
 }
 
 int proto_parse_ota(cJSON *json, ota_info_t *ota) {
   cJSON *p = cJSON_GetObjectItem(json, "payload");
   if (!p) return -1;
-  cJSON *v = cJSON_GetObjectItem(p, "version");
-  cJSON *u = cJSON_GetObjectItem(p, "url");
-  cJSON *s = cJSON_GetObjectItem(p, "size");
-  cJSON *h = cJSON_GetObjectItem(p, "sha256");
+
+  cJSON *params = cJSON_GetObjectItem(p, "params");
+  cJSON *src = (params && cJSON_IsObject(params)) ? params : p;
+  cJSON *v = cJSON_GetObjectItem(src, "version");
+  cJSON *u = cJSON_GetObjectItem(src, "url");
+  cJSON *s = cJSON_GetObjectItem(src, "size");
+  cJSON *h = cJSON_GetObjectItem(src, "sha256");
   if (!v || !u) return -1;
   strncpy(ota->version, v->valuestring, sizeof(ota->version) - 1);
+  ota->version[sizeof(ota->version) - 1] = '\0';
   strncpy(ota->url, u->valuestring, sizeof(ota->url) - 1);
+  ota->url[sizeof(ota->url) - 1] = '\0';
   ota->size = s ? s->valueint : 0;
-  if (h && h->valuestring) strncpy(ota->sha256, h->valuestring, sizeof(ota->sha256) - 1);
+  if (h && h->valuestring) {
+    strncpy(ota->sha256, h->valuestring, sizeof(ota->sha256) - 1);
+    ota->sha256[sizeof(ota->sha256) - 1] = '\0';
+  }
   return 0;
 }

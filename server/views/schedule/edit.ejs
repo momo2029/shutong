@@ -1,0 +1,151 @@
+<%
+  const WEEKDAYS = ['周一', '周二', '周三', '周四', '周五', '周六', '周日'];
+  const slotMap = {};
+  let maxSlot = 0;
+  for (const s of slots) {
+    slotMap[`${s.weekday}_${s.slot_index}`] = s;
+    if (s.slot_index > maxSlot) maxSlot = s.slot_index;
+  }
+  const slotCount = Math.max(maxSlot, 8);
+  const _todayWd = typeof todayWeekday !== 'undefined' ? todayWeekday : 1;
+%>
+<div class="flex-between">
+  <h2>编辑课表</h2>
+  <div style="display:flex;gap:8px;">
+    <a href="/schedule" class="btn btn-outline">返回</a>
+    <button type="button" id="addRowBtn" class="btn btn-outline btn-sm">+ 增加一节</button>
+    <button type="button" id="saveBtn" class="btn btn-primary">保存课表</button>
+  </div>
+</div>
+
+<% if (courses.length === 0) { %>
+  <div class="card mt-2" style="border-left:4px solid #f59e0b;">
+    <p>还没有创建课程，<a href="/courses/new">先去创建课程</a>，再回来填课表。</p>
+  </div>
+<% } else { %>
+<p class="text-muted mt-2" style="font-size:13px;">填写每周固定课表。每格选择课程、时间、教室、老师即可。空格不会保存。</p>
+
+<div class="card mt-2" style="overflow-x:auto;">
+  <table id="scheduleTable" style="width:100%;border-collapse:collapse;min-width:900px;">
+    <thead>
+      <tr>
+        <th style="padding:8px;border:1px solid #eee;width:50px;">节</th>
+        <% for (let d = 1; d <= 7; d++) { %>
+          <th style="padding:8px;border:1px solid #eee;<%= d === _todayWd ? 'background:var(--primary);color:#fff;' : '' %>"><%= WEEKDAYS[d-1] %></th>
+        <% } %>
+      </tr>
+    </thead>
+    <tbody>
+      <% for (let i = 1; i <= slotCount; i++) { %>
+        <tr data-slot="<%= i %>">
+          <td style="padding:8px;border:1px solid #eee;text-align:center;font-weight:600;background:#fafafa;"><%= i %></td>
+          <% for (let d = 1; d <= 7; d++) { %>
+            <%
+              const s = slotMap[`${d}_${i}`];
+              const courseId = s?.course_id || '';
+              const startTime = s?.start_time || '';
+              const endTime = s?.end_time || '';
+              const classroom = s?.classroom || '';
+              const teacher = s?.teacher || '';
+            %>
+            <td style="padding:6px;border:1px solid #eee;vertical-align:top;min-width:120px;">
+              <select class="form-input course" data-weekday="<%= d %>" data-slot="<%= i %>" style="width:100%;margin-bottom:4px;font-size:12px;">
+                <option value="">--</option>
+                <% for (const c of courses) { %>
+                  <option value="<%= c.id %>" <%= courseId === c.id ? 'selected' : '' %>><%= c.name %></option>
+                <% } %>
+              </select>
+              <div style="display:flex;gap:4px;margin-bottom:4px;">
+                <input type="time" class="form-input start" value="<%= startTime %>" style="width:50%;font-size:12px;padding:4px;" />
+                <input type="time" class="form-input end" value="<%= endTime %>" style="width:50%;font-size:12px;padding:4px;" />
+              </div>
+              <input type="text" class="form-input classroom" value="<%= classroom %>" placeholder="教室" style="width:100%;margin-bottom:4px;font-size:12px;padding:4px;" />
+              <input type="text" class="form-input teacher" value="<%= teacher %>" placeholder="老师" style="width:100%;font-size:12px;padding:4px;" />
+            </td>
+          <% } %>
+        </tr>
+      <% } %>
+    </tbody>
+  </table>
+</div>
+<% } %>
+
+<script>
+const courseList = <%- JSON.stringify(courses.map(c => ({ id: c.id, name: c.name }))) %>;
+
+function escapeHtml(s) {
+  return String(s).replace(/[&<>"']/g, ch => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[ch]));
+}
+
+function collectSlots() {
+  const slots = [];
+  document.querySelectorAll('#scheduleTable tbody tr').forEach(tr => {
+    const slotIndex = parseInt(tr.dataset.slot);
+    for (let d = 1; d <= 7; d++) {
+      const cell = tr.querySelector(`td:nth-child(${d + 1})`);
+      const courseId = cell.querySelector('.course').value;
+      if (!courseId) continue;
+      slots.push({
+        weekday: d,
+        slotIndex,
+        startTime: cell.querySelector('.start').value,
+        endTime: cell.querySelector('.end').value,
+        courseId,
+        classroom: cell.querySelector('.classroom').value,
+        teacher: cell.querySelector('.teacher').value,
+      });
+    }
+  });
+  return slots;
+}
+
+document.getElementById('saveBtn').addEventListener('click', async () => {
+  const slots = collectSlots();
+  // 简单校验
+  for (const s of slots) {
+    if (!s.startTime || !s.endTime) {
+      showToast('请填写每节课的起止时间', 'error');
+      return;
+    }
+    if (s.startTime >= s.endTime) {
+      showToast('结束时间必须晚于开始时间', 'error');
+      return;
+    }
+  }
+  const resp = await fetch('/api/schedule', {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ slots }),
+  });
+  if (resp.ok) {
+    showToast('课表已保存', 'success');
+    setTimeout(() => window.location.href = '/schedule', 600);
+  } else {
+    const data = await resp.json();
+    showToast(data.error || '保存失败', 'error');
+  }
+});
+
+document.getElementById('addRowBtn').addEventListener('click', () => {
+  const tbody = document.querySelector('#scheduleTable tbody');
+  const rows = tbody.querySelectorAll('tr');
+  const nextSlot = rows.length + 1;
+  const tr = document.createElement('tr');
+  tr.dataset.slot = nextSlot;
+  const courseOptions = courseList.map(c => `<option value="${escapeHtml(c.id)}">${escapeHtml(c.name)}</option>`).join('');
+  let html = `<td style="padding:8px;border:1px solid #eee;text-align:center;font-weight:600;background:#fafafa;">${nextSlot}</td>`;
+  for (let d = 1; d <= 7; d++) {
+    html += `<td style="padding:6px;border:1px solid #eee;vertical-align:top;min-width:120px;">
+      <select class="form-input course" data-weekday="${d}" data-slot="${nextSlot}" style="width:100%;margin-bottom:4px;font-size:12px;"><option value="">--</option>${courseOptions}</select>
+      <div style="display:flex;gap:4px;margin-bottom:4px;">
+        <input type="time" class="form-input start" style="width:50%;font-size:12px;padding:4px;" />
+        <input type="time" class="form-input end" style="width:50%;font-size:12px;padding:4px;" />
+      </div>
+      <input type="text" class="form-input classroom" placeholder="教室" style="width:100%;margin-bottom:4px;font-size:12px;padding:4px;" />
+      <input type="text" class="form-input teacher" placeholder="老师" style="width:100%;font-size:12px;padding:4px;" />
+    </td>`;
+  }
+  tr.innerHTML = html;
+  tbody.appendChild(tr);
+});
+</script>

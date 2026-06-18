@@ -1,13 +1,14 @@
 import { Hono } from 'hono';
 import { serveStatic } from '@hono/node-server/serve-static';
 import { getEnv } from './config.js';
-import { db } from './db/index.js';
-import { users, courses, devices, notes, noteImages } from './db/schema.js';
+import { db, raw } from './db/index.js';
+import { users, courses, devices, notes, noteImages, scheduleSlots } from './db/schema.js';
 import { eq, and, desc } from 'drizzle-orm';
 import { marked } from 'marked';
 import { getMediaUrl } from './services/storage.js';
 import { logger, errorFields } from './utils/logger.js';
 import { randomUUID } from 'crypto';
+import type { Context } from 'hono';
 
 // Custom context variables
 export type Vars = {
@@ -34,6 +35,44 @@ function render(view: string, data: Record<string, unknown> = {}) {
   const body = ejs.render(viewTpl, renderData, { filename: viewPath });
   const layoutTpl = readFileSync(layoutPath, 'utf-8');
   return ejs.render(layoutTpl, { ...renderData, body }, { filename: layoutPath });
+}
+
+async function getUserFromCookie(cookie: string) {
+  const match = cookie.match(/token=([^;]+)/);
+  if (!match) return null;
+
+  try {
+    const { verifyJWT } = await import('./utils/jwt.js');
+    const payload = await verifyJWT(match[1]);
+    const u = db.select().from(users).where(eq(users.id, payload.sub as string)).get();
+    if (!u) return null;
+    return {
+      id: u.id,
+      email: u.email,
+      nickname: u.nickname,
+      role: u.role,
+      plan: u.plan,
+      storageUsed: u.storageUsed,
+      storageLimit: u.storageLimit,
+    };
+  } catch (e) {
+    logger.error('JWT verify failed', errorFields(e));
+    return null;
+  }
+}
+
+async function requirePageUser(c: Context<{ Variables: Vars }>) {
+  const user = await getUserFromCookie(c.req.header('cookie') || '');
+  if (!user) return null;
+  c.set('user', user);
+  return user;
+}
+
+async function renderAdminPage(c: Context<{ Variables: Vars }>, view: string, title: string) {
+  const user = await requirePageUser(c);
+  if (!user) return c.redirect('/auth/login');
+  if (user.role !== 'admin') return c.redirect('/');
+  return c.var.render(view, { title, user });
 }
 
 // Debug: add response header to verify deployment
@@ -69,14 +108,7 @@ app.use('*', async (c, next) => {
     if (!data.user) {
       const match = cookie.match(/token=([^;]+)/);
       if (match) {
-        try {
-          const { verifyJWT } = await import('./utils/jwt.js');
-          const payload = await verifyJWT(match[1]);
-          const u = db.select().from(users).where(eq(users.id, payload.sub as string)).get();
-          if (u) {
-            data.user = { id: u.id, email: u.email, nickname: u.nickname, plan: u.plan, storageUsed: u.storageUsed, storageLimit: u.storageLimit };
-          }
-        } catch (e) { logger.error('JWT verify failed', errorFields(e)); }
+        data.user = await getUserFromCookie(cookie);
       }
     }
     const html = render(view, data);
@@ -87,10 +119,30 @@ app.use('*', async (c, next) => {
 
 // Static files
 app.use('/public/*', serveStatic({ root: '.' }));
-app.use('/data/*', serveStatic({ root: '.' }));
+if (process.env.NODE_ENV !== 'production') {
+  app.use('/data/*', serveStatic({ root: '.' }));
+}
 
 // EJS page routes
-app.get('/', async (c) => c.var.render('dashboard/index.ejs', { title: '工作台' }));
+app.get('/', async (c) => {
+  const cookie = c.req.header('cookie') || '';
+  const match = cookie.match(/token=([^;]+)/);
+  let currentSlot: any = null;
+  let nextSlot: any = null;
+  let weekday = new Date().getDay() === 0 ? 7 : new Date().getDay();
+  if (match) {
+    try {
+      const { verifyJWT } = await import('./utils/jwt.js');
+      const payload = await verifyJWT(match[1]);
+      const { computeCurrentSlot } = await import('./routes/schedule.js');
+      const info = computeCurrentSlot(payload.sub as string);
+      currentSlot = info.current;
+      nextSlot = info.next;
+      weekday = info.weekday;
+    } catch (e) { /* 未登录或无课表 */ }
+  }
+  return c.var.render('dashboard/index.ejs', { title: '工作台', currentSlot, nextSlot, weekday });
+});
 app.get('/auth/login', async (c) => c.var.render('auth/login.ejs', { title: '微信登录' }));
 app.get('/auth/register', (c) => c.redirect('/auth/login'));
 app.get('/auth/logout', (c) => {
@@ -158,6 +210,56 @@ app.get('/courses/:id/edit', async (c) => {
   } catch (e) { /* fall through */ }
   return c.var.render('courses/form.ejs', { title: '编辑课程' });
 });
+
+// 课表页面
+app.get('/schedule', async (c) => {
+  const cookie = c.req.header('cookie') || '';
+  const match = cookie.match(/token=([^;]+)/);
+  let slots: any[] = [];
+  let courseList: any[] = [];
+  const { todayWeekdayShanghai, computeCurrentSlot } = await import('./routes/schedule.js');
+  let currentInfo: any = { current: null, next: null, weekday: todayWeekdayShanghai() };
+  if (match) {
+    try {
+      const { verifyJWT } = await import('./utils/jwt.js');
+      const payload = await verifyJWT(match[1]);
+      slots = raw.prepare(`
+        SELECT s.*, c.name AS course_name
+        FROM schedule_slots s
+        LEFT JOIN courses c ON c.id = s.course_id
+        WHERE s.user_id = ?
+        ORDER BY s.weekday, s.slot_index
+      `).all(payload.sub as string);
+      courseList = db.select().from(courses).where(eq(courses.userId, payload.sub as string)).all();
+      currentInfo = computeCurrentSlot(payload.sub as string);
+    } catch (e) { /* fall through */ }
+  }
+  return c.var.render('schedule/index.ejs', { title: '课表', slots, courses: courseList, currentInfo, todayWeekday: currentInfo.weekday });
+});
+
+app.get('/schedule/edit', async (c) => {
+  const cookie = c.req.header('cookie') || '';
+  const match = cookie.match(/token=([^;]+)/);
+  if (!match) return c.redirect('/auth/login');
+  let slots: any[] = [];
+  let courseList: any[] = [];
+  const { todayWeekdayShanghai } = await import('./routes/schedule.js');
+  const todayWeekday = todayWeekdayShanghai();
+  try {
+    const { verifyJWT } = await import('./utils/jwt.js');
+    const payload = await verifyJWT(match[1]);
+    slots = raw.prepare(`
+      SELECT s.*, c.name AS course_name
+      FROM schedule_slots s
+      LEFT JOIN courses c ON c.id = s.course_id
+      WHERE s.user_id = ?
+      ORDER BY s.weekday, s.slot_index
+    `).all(payload.sub as string);
+    courseList = db.select().from(courses).where(eq(courses.userId, payload.sub as string)).all();
+  } catch (e) { /* fall through */ }
+  return c.var.render('schedule/edit.ejs', { title: '编辑课表', slots, courses: courseList, todayWeekday });
+});
+
 app.get('/notes', async (c) => {
   const cookie = c.req.header('cookie') || '';
   const match = cookie.match(/token=([^;]+)/);
@@ -267,8 +369,8 @@ app.get('/r/:sn', async (c) => {
 });
 app.get('/knowledge/ask', async (c) => c.var.render('knowledge/ask.ejs', { title: '知识库问答' }));
 app.get('/offline', async (c) => c.var.render('offline.ejs', { title: '离线' }));
-app.get('/admin', async (c) => c.var.render('admin/index.ejs', { title: '管理后台' }));
-app.get('/admin/users', async (c) => c.var.render('admin/users.ejs', { title: '用户管理' }));
-app.get('/admin/firmware', async (c) => c.var.render('admin/firmware.ejs', { title: '固件管理' }));
+app.get('/admin', async (c) => renderAdminPage(c, 'admin/index.ejs', '管理后台'));
+app.get('/admin/users', async (c) => renderAdminPage(c, 'admin/users.ejs', '用户管理'));
+app.get('/admin/firmware', async (c) => renderAdminPage(c, 'admin/firmware.ejs', '固件管理'));
 
 export default app;

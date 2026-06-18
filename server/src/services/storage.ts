@@ -23,7 +23,7 @@ function getBucketManager() {
  */
 export function getDownloadUrl(key: string, options?: { style?: string; expiresIn?: number }): string {
   if (!env.QINIU_ACCESS_KEY || !env.QINIU_SECRET_KEY || !env.QINIU_DOMAIN) {
-    return `/${key}`;
+    return `/data/files/${key}`;
   }
 
   const expiresIn = options?.expiresIn ?? 86400; // 默认 24h
@@ -52,7 +52,7 @@ export function getMediaUrl(path: string, options?: { style?: string; expiresIn?
     return getDownloadUrl(path, options);
   }
 
-  return `/${path}`;
+  return `/data/files/${path}`;
 }
 
 export async function uploadFile(

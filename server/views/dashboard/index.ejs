@@ -3,10 +3,43 @@
   <p class="text-muted">欢迎使用书童课堂笔记</p>
   <a href="/notes/record" class="btn btn-primary">开始录音</a>
 </div>
+
+<% if (typeof currentSlot !== 'undefined' && currentSlot) { %>
+<div class="card mt-2" style="border-left:4px solid var(--primary);">
+  <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:12px;">
+    <div>
+      <div style="font-size:13px;color:var(--text-muted);">正在上课 · 已上 <%= currentSlot.elapsedMin %> 分钟</div>
+      <div style="font-size:22px;font-weight:600;margin-top:4px;"><%= currentSlot.course_name || '未命名课程' %></div>
+      <div style="font-size:13px;color:var(--text-muted);margin-top:4px;">
+        第<%= currentSlot.slot_index %>节 · <%= currentSlot.start_time %>–<%= currentSlot.end_time %><%= currentSlot.classroom ? ' · ' + currentSlot.classroom : '' %><%= currentSlot.teacher ? ' · ' + currentSlot.teacher : '' %>
+      </div>
+    </div>
+    <a href="/notes/record?slot=<%= currentSlot.id %>" class="btn btn-primary">为本节录音</a>
+  </div>
+</div>
+<% } else if (typeof nextSlot !== 'undefined' && nextSlot) { %>
+<div class="card mt-2" style="border-left:4px solid #f59e0b;">
+  <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:12px;">
+    <div>
+      <div style="font-size:13px;color:var(--text-muted);">下一节 · 还有 <%= nextSlot.waitMin %> 分钟</div>
+      <div style="font-size:22px;font-weight:600;margin-top:4px;"><%= nextSlot.course_name || '未命名课程' %></div>
+      <div style="font-size:13px;color:var(--text-muted);margin-top:4px;">
+        第<%= nextSlot.slot_index %>节 · <%= nextSlot.start_time %>–<%= nextSlot.end_time %><%= nextSlot.classroom ? ' · ' + nextSlot.classroom : '' %>
+      </div>
+    </div>
+    <a href="/schedule" class="btn btn-outline">查看完整课表</a>
+  </div>
+</div>
+<% } %>
+
 <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:16px;margin-top:20px;">
   <a href="/notes" class="card" style="text-decoration:none;color:inherit;">
     <h3>我的笔记</h3>
     <p class="text-muted">查看所有课堂笔记</p>
+  </a>
+  <a href="/schedule" class="card" style="text-decoration:none;color:inherit;">
+    <h3>我的课表</h3>
+    <p class="text-muted">本周课程安排</p>
   </a>
   <a href="/courses" class="card" style="text-decoration:none;color:inherit;">
     <h3>课程管理</h3>

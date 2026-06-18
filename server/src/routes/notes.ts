@@ -1,6 +1,6 @@
 import { Hono } from 'hono';
 import { raw, db } from '../db/index.js';
-import { notes, noteImages, devices, aiTasks } from '../db/schema.js';
+import { notes, noteImages, devices, aiTasks, scheduleSlots } from '../db/schema.js';
 import { eq, and, like } from 'drizzle-orm';
 import { snowflake } from '../utils/snowflake.js';
 import { authMiddleware } from '../middleware/auth.js';
@@ -14,16 +14,18 @@ app.use('*', authMiddleware);
 
 // 前端轮询：标记正在查看某条笔记（控制实时转写频率）
 app.post('/:id/viewing', (c) => {
-  markNoteViewed(c.req.param('id'));
+  const note = db.select().from(notes).where(and(eq(notes.id, c.req.param('id')), eq(notes.userId, c.var.user.id))).get();
+  if (!note) return c.json({ error: '笔记不存在' }, 404);
+  markNoteViewed(note.id);
   return c.json({ ok: true });
 });
 
 // 停止录音（向设备发送 stop_record 命令）
 app.post('/:id/stop-recording', async (c) => {
-  const note = db.select().from(notes).where(eq(notes.id, c.req.param('id'))).get();
+  const note = db.select().from(notes).where(and(eq(notes.id, c.req.param('id')), eq(notes.userId, c.var.user.id))).get();
   if (!note || !note.deviceId) return c.json({ error: '笔记无关联设备' }, 400);
 
-  const device = db.select().from(devices).where(eq(devices.id, note.deviceId)).get();
+  const device = db.select().from(devices).where(and(eq(devices.id, note.deviceId), eq(devices.userId, c.var.user.id))).get();
   if (!device) return c.json({ error: '设备不存在' }, 404);
 
   try {
@@ -38,10 +40,10 @@ app.post('/:id/stop-recording', async (c) => {
 
 // 继续录音（向设备发送 start_record 命令）
 app.post('/:id/resume-recording', async (c) => {
-  const note = db.select().from(notes).where(eq(notes.id, c.req.param('id'))).get();
+  const note = db.select().from(notes).where(and(eq(notes.id, c.req.param('id')), eq(notes.userId, c.var.user.id))).get();
   if (!note || !note.deviceId) return c.json({ error: '笔记无关联设备' }, 400);
 
-  const device = db.select().from(devices).where(eq(devices.id, note.deviceId)).get();
+  const device = db.select().from(devices).where(and(eq(devices.id, note.deviceId), eq(devices.userId, c.var.user.id))).get();
   if (!device) return c.json({ error: '设备不存在' }, 404);
 
   try {
@@ -55,10 +57,10 @@ app.post('/:id/resume-recording', async (c) => {
 
 // 设备拍照（向设备发送 capture 命令）
 app.post('/:id/capture', async (c) => {
-  const note = db.select().from(notes).where(eq(notes.id, c.req.param('id'))).get();
+  const note = db.select().from(notes).where(and(eq(notes.id, c.req.param('id')), eq(notes.userId, c.var.user.id))).get();
   if (!note || !note.deviceId) return c.json({ error: '笔记无关联设备' }, 400);
 
-  const device = db.select().from(devices).where(eq(devices.id, note.deviceId)).get();
+  const device = db.select().from(devices).where(and(eq(devices.id, note.deviceId), eq(devices.userId, c.var.user.id))).get();
   if (!device) return c.json({ error: '设备不存在' }, 404);
 
   try {
@@ -102,11 +104,22 @@ app.post('/', async (c) => {
 
   // JSON body: 无音频创建笔记（录音开始即创建，后续分块上传）
   if (contentType.includes('application/json')) {
-    const body = await c.req.json() as { title?: string };
+    const body = await c.req.json() as { title?: string; scheduleSlotId?: string; courseId?: string };
     const noteId = snowflake();
     const title = body.title || '网页录音笔记';
     const now = new Date().toISOString();
-    db.insert(notes).values({ id: noteId, userId: c.var.user.id, title, status: 'processing', createdAt: now }).run();
+    let courseId: string | null = body.courseId || null;
+    // 仅当未显式指定 courseId 时，通过 scheduleSlotId 自动解析
+    if (!courseId && body.scheduleSlotId) {
+      const slot = db.select().from(scheduleSlots)
+        .where(and(eq(scheduleSlots.id, body.scheduleSlotId), eq(scheduleSlots.userId, c.var.user.id))).get();
+      if (slot) courseId = slot.courseId ?? null;
+    }
+    db.insert(notes).values({
+      id: noteId, userId: c.var.user.id, title, status: 'processing',
+      courseId: courseId ?? undefined, scheduleSlotId: body.scheduleSlotId || undefined,
+      createdAt: now,
+    }).run();
     createTask(noteId, 'asr');
     return c.json({ ok: true, id: noteId });
   }
@@ -115,9 +128,17 @@ app.post('/', async (c) => {
   const form = await c.req.formData();
   const file = form.get('audio') as File | null;
   const title = form.get('title') as string || '网页录音笔记';
-  const courseId = form.get('courseId') as string || null;
+  const scheduleSlotId = form.get('scheduleSlotId') as string || null;
+  let courseId = form.get('courseId') as string || null;
   const transcript = form.get('transcript') as string || '';
   if (!file) return c.json({ error: '未上传音频' }, 400);
+
+  // 仅当未显式指定 courseId 时，通过 scheduleSlotId 自动解析
+  if (!courseId && scheduleSlotId) {
+    const slot = db.select().from(scheduleSlots)
+      .where(and(eq(scheduleSlots.id, scheduleSlotId), eq(scheduleSlots.userId, c.var.user.id))).get();
+    if (slot && slot.courseId) courseId = slot.courseId;
+  }
 
   const noteId = snowflake();
   const key = `audio/${c.var.user.id}/${noteId}.webm`;
@@ -139,11 +160,12 @@ app.post('/', async (c) => {
   // 有浏览器转录 → 写入但不重复创建 ASR 任务
   if (transcript.trim()) {
     db.insert(notes).values({
-      id: noteId, userId: c.var.user.id, courseId, title, audioPath: savedKey,
+      id: noteId, userId: c.var.user.id, courseId, scheduleSlotId: scheduleSlotId || undefined,
+      title, audioPath: savedKey,
       rawTranscript: transcript, status: 'processing', createdAt: now,
     }).run();
   } else {
-    db.insert(notes).values({ id: noteId, userId: c.var.user.id, courseId, title, audioPath: savedKey, status: 'processing', createdAt: now }).run();
+    db.insert(notes).values({ id: noteId, userId: c.var.user.id, courseId, scheduleSlotId: scheduleSlotId || undefined, title, audioPath: savedKey, status: 'processing', createdAt: now }).run();
   }
   // ASR 任务（下游 summary/exam_points/mind_map 由 queue 在 ASR 完成后自动创建）
   createTask(noteId, 'asr');

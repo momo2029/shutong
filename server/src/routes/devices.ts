@@ -4,7 +4,22 @@ import { devices } from '../db/schema.js';
 import { eq, and } from 'drizzle-orm';
 import { snowflake } from '../utils/snowflake.js';
 import { authMiddleware } from '../middleware/auth.js';
+import { getDownloadUrl } from '../services/storage.js';
+import { readFileSync, existsSync } from 'fs';
+import { join } from 'path';
 import type { Vars } from '../app.js';
+
+const VERSIONS_FILE = join(process.cwd(), 'data', 'firmware', 'versions.json');
+
+function getLatestFirmwareUrl(): { url: string; version: string } | null {
+  if (!existsSync(VERSIONS_FILE)) return null;
+  try {
+    const list = JSON.parse(readFileSync(VERSIONS_FILE, 'utf-8'));
+    if (list.length === 0) return null;
+    const latest = list[0];
+    return { url: getDownloadUrl(latest.path, { expiresIn: 3600 }), version: latest.version };
+  } catch { return null; }
+}
 
 const app = new Hono<{ Variables: Vars }>();
 
@@ -42,9 +57,18 @@ app.post('/:id/cmd', async (c) => {
   if (!dev) return c.json({ error: '设备不存在' }, 404);
   if (!dev.online) return c.json({ error: '设备离线' }, 400);
 
+  let finalParams = params || {};
+  // OTA 命令：自动获取最新固件 URL
+  if (cmd === 'ota') {
+    const fw = getLatestFirmwareUrl();
+    if (!fw) return c.json({ error: '没有可用固件，请先上传' }, 400);
+    finalParams = { url: fw.url, version: fw.version };
+    console.log(`[OTA] Pushing firmware ${fw.version} to device ${dev.sn}`);
+  }
+
   const { publishCommand } = await import('../services/mqtt.js');
-  await publishCommand(dev.sn, cmd, params || {});
-  return c.json({ ok: true });
+  await publishCommand(dev.sn, cmd, finalParams);
+  return c.json({ ok: true, ...(cmd === 'ota' ? { version: (finalParams as any).version } : {}) });
 });
 
 export default app;

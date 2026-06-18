@@ -5,6 +5,8 @@
 #include "cJSON.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "mbedtls/base64.h"
+#include "mbedtls/md.h"
 #include <string.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -32,10 +34,55 @@ static bool s_reconnect_scheduled = false;
 #define CONFIG_MQTT_MASTER_KEY ""
 #endif
 
+#define DEVICE_AUTH_TYPE "device"
+
 static char *build_topic(const char *suffix) {
   static char topic[128];
   snprintf(topic, sizeof(topic), "sht/%s/%s", s_sn, suffix);
   return topic;
+}
+
+static void base64url_encode(const unsigned char *src, size_t src_len, char *dst, size_t dst_len) {
+  size_t out_len = 0;
+  if (mbedtls_base64_encode((unsigned char *)dst, dst_len, &out_len, src, src_len) != 0) {
+    if (dst_len > 0) dst[0] = '\0';
+    return;
+  }
+
+  for (size_t i = 0; i < out_len; i++) {
+    if (dst[i] == '+') dst[i] = '-';
+    if (dst[i] == '/') dst[i] = '_';
+  }
+  while (out_len > 0 && dst[out_len - 1] == '=') out_len--;
+  dst[out_len] = '\0';
+}
+
+static bool build_signed_username(const char *sn, char *username, size_t username_len) {
+  if (!sn || !username || username_len == 0 || strlen(CONFIG_MQTT_MASTER_KEY) == 0) {
+    return false;
+  }
+
+  // 设备没有可靠 RTC 时使用相对秒数，服务端允许 24 小时内的相对时间戳。
+  uint32_t ts = esp_log_timestamp() / 1000;
+  char payload[96];
+  snprintf(payload, sizeof(payload), "%s|%lu|%s", DEVICE_AUTH_TYPE, (unsigned long)ts, sn);
+
+  unsigned char digest[32];
+  const mbedtls_md_info_t *md_info = mbedtls_md_info_from_type(MBEDTLS_MD_SHA256);
+  if (!md_info) return false;
+  if (mbedtls_md_hmac(md_info,
+                      (const unsigned char *)CONFIG_MQTT_MASTER_KEY,
+                      strlen(CONFIG_MQTT_MASTER_KEY),
+                      (const unsigned char *)payload,
+                      strlen(payload),
+                      digest) != 0) {
+    return false;
+  }
+
+  char signature[48];
+  base64url_encode(digest, sizeof(digest), signature, sizeof(signature));
+  snprintf(username, username_len, "%s:%lu:%s", DEVICE_AUTH_TYPE, (unsigned long)ts, signature);
+  return true;
 }
 
 static void reconnect_task(void *arg) {
@@ -152,17 +199,24 @@ bool shutong_mqtt_init(const char *sn, const char *broker_url, mqtt_cmd_cb_t cmd
     nvs_close(nvs_h);
   }
 
+  static char signed_username[128] = {0};
   const char *username = use_nvs_creds ? nvs_username : CONFIG_MQTT_USERNAME;
   const char *mqtt_password = use_nvs_creds ? nvs_password : CONFIG_MQTT_PASSWORD;
+  if (!use_nvs_creds && build_signed_username(sn, signed_username, sizeof(signed_username))) {
+    username = signed_username;
+    mqtt_password = "";
+  }
 
   if (use_nvs_creds) {
     ESP_LOGI(TAG, "Using personalized MQTT credentials: %s", username);
+  } else if (username == signed_username) {
+    ESP_LOGI(TAG, "Using signed MQTT username");
   } else {
     ESP_LOGI(TAG, "Using default MQTT credentials: %s", username);
   }
 
   char client_id[48];
-  snprintf(client_id, sizeof(client_id), "st_%s", sn);
+  snprintf(client_id, sizeof(client_id), "%s", sn);
 
   esp_mqtt_client_config_t cfg = {
     .broker.address.uri = broker_url,

@@ -23,10 +23,43 @@ const env = {
   LLM_API_URL: process.env.LLM_API_URL || 'https://token-plan-cn.xiaomimimo.com/v1',
   LLM_MODEL: process.env.LLM_MODEL || 'mimo-v2.5-pro',
   TTS_MODEL: process.env.TTS_MODEL || 'FunAudioLLM/CosyVoice2-0.5B',
+  ALLOW_FIRST_USER_ADMIN: process.env.ALLOW_FIRST_USER_ADMIN === 'true',
 };
 
 export function getEnv() {
   return env;
+}
+
+export function validateProductionConfig() {
+  const isProd = process.env.NODE_ENV === 'production';
+  if (!isProd) return;
+
+  const errors: string[] = [];
+  if (!process.env.JWT_SECRET || env.JWT_SECRET === 'shutong-dev-secret-change-in-prod' || env.JWT_SECRET === 'change-me-in-production') {
+    errors.push('JWT_SECRET must be set to a strong production secret');
+  }
+  if (!env.DEVICE_MASTER_KEY) {
+    errors.push('DEVICE_MASTER_KEY must be set for production device authentication');
+  }
+  if (!env.QINIU_ACCESS_KEY || !env.QINIU_SECRET_KEY || !env.QINIU_DOMAIN) {
+    errors.push('QINIU_ACCESS_KEY, QINIU_SECRET_KEY and QINIU_DOMAIN must be set in production');
+  }
+  if (!env.BASE_URL.startsWith('https://')) {
+    errors.push('BASE_URL must use https:// in production');
+  }
+  if (!env.MQTT_USER || !env.MQTT_PASSWORD) {
+    errors.push('MQTT_USER and MQTT_PASSWORD must be set in production');
+  }
+  if (!env.EMQX_API_USER || !env.EMQX_API_PASSWORD) {
+    errors.push('EMQX_API_USER and EMQX_API_PASSWORD must be set in production');
+  }
+  if (env.ALLOW_FIRST_USER_ADMIN) {
+    errors.push('ALLOW_FIRST_USER_ADMIN must not be enabled in production');
+  }
+
+  if (errors.length > 0) {
+    throw new Error(`Invalid production config:\n- ${errors.join('\n- ')}`);
+  }
 }
 
 export type Env = typeof env;
