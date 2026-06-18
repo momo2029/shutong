@@ -215,7 +215,7 @@ export function initMQTT() {
   }
 
   const opts: mqtt.IClientOptions = {
-    clientId: 'sht_server',
+    clientId: 'st_server',
     clean: false,
   };
   if (env.MQTT_USER) {
@@ -273,7 +273,7 @@ async function handleClientConnected(data: Record<string, unknown>) {
     return;
   }
 
-  if (clientid === 'sht_server' || clientid === 'sht_svr') {
+  if (clientid === 'st_server' || clientid === 'sht_svr') {
     return;
   }
 

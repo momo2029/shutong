@@ -20,7 +20,7 @@ app.post('/auth', async (c) => {
   const password = body.password || '';
   const clientid = body.clientid || '';
 
-  if (clientid === 'sht_server') {
+  if (clientid === 'st_server') {
     const env = getEnv();
     const ok = username === env.MQTT_USER && password === env.MQTT_PASSWORD;
     return c.json(authResult(ok, ok ? undefined : 'invalid_server_credentials'));

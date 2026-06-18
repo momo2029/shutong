@@ -22,8 +22,8 @@ main(_) ->
     application:ensure_all_started(emqx),
     P1 = base64:decode(\"$B64_PASS1\"),
     P2 = base64:decode(\"$B64_PASS2\"),
-    R1 = emqx_authn_mnesia:put_user(#{username => <<\"sht_server\">>, password => P1}),
-    io:format(\"User sht_server: ~p~n\", [R1]),
+    R1 = emqx_authn_mnesia:put_user(#{username => <<\"st_server\">>, password => P1}),
+    io:format(\"User st_server: ~p~n\", [R1]),
     R2 = emqx_authn_mnesia:put_user(#{username => <<\"st_device\">>, password => P2}),
     io:format(\"User st_device: ~p~n\", [R2]),
     init:stop().
