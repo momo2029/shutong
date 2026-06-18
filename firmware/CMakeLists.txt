@@ -14,6 +14,6 @@ set(EXTRA_COMPONENT_DIRS
     ${CMAKE_SOURCE_DIR}/external_components/espressif__button
 )
 
-set(PROJECT_VER "1.0.2")
+set(PROJECT_VER "1.0.3")
 include($ENV{IDF_PATH}/tools/cmake/project.cmake)
 project(shutong)

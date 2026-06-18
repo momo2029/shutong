@@ -79,7 +79,7 @@ async function renderAdminPage(c: Context<{ Variables: Vars }>, view: string, ti
 // Debug: add response header to verify deployment
 app.use('*', async (c, next) => {
   await next();
-  c.header('X-App-Version', '20260605-2');
+  c.header('X-App-Version', '20260618-1');
 });
 
 // CORS：允许低代码平台/App 跨域调用 /api/*
