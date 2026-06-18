@@ -530,6 +530,13 @@ extern "C" void app_main(void) {
   // WiFi — reference: https://github.com/78/esp-wifi-connect
   auto &wifi = WifiManager::GetInstance();
 
+  // 首次开机 / 恢复出厂时注入默认 WiFi，避免每次都走 AP 配网
+  auto &ssid_mgr = SsidManager::GetInstance();
+  if (ssid_mgr.GetSsidList().empty()) {
+    ESP_LOGI(TAG, "No saved WiFi, injecting default %s", CONFIG_WIFI_SSID_DEFAULT);
+    ssid_mgr.AddSsid(CONFIG_WIFI_SSID_DEFAULT, CONFIG_WIFI_PASS_DEFAULT);
+  }
+
   WifiManagerConfig wifi_cfg;
   wifi_cfg.ssid_prefix = "shutong";
   wifi_cfg.language = "zh-CN";

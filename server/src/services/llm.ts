@@ -35,6 +35,37 @@ export async function generateMindMap(transcript: string): Promise<string> {
 ${transcript}`);
 }
 
+export async function generateTags(transcript: string, summary: string): Promise<string> {
+  if (!transcript && !summary) return '';
+  const text = (summary || transcript).slice(0, 2000);
+  const result = await callLLM(`从以下课堂笔记内容中提取 3-5 个主题标签。要求：
+- 每个标签 2-6 字，名词性，能体现这节课讲的核心主题
+- 用逗号分隔，只输出标签本身，不要解释、不要编号、不要 markdown
+- 示例：导数,微积分,应用题,练习课
+
+内容：
+${text}`);
+  return result
+    .split(/[,，、\n]/)
+    .map(t => t.trim().replace(/^[#•\-*\d.、]+/, '').replace(/[#•\-*]/g, '').trim())
+    .filter(t => t.length >= 2 && t.length <= 12)
+    .slice(0, 5)
+    .join(',');
+}
+
+export async function generateTitleFromTranscript(transcript: string, summary: string): Promise<string> {
+  const text = summary || transcript.slice(0, 800);
+  if (!text) return '';
+  const result = await callLLM(`为以下课堂笔记生成简短标题。要求：
+- 10-20 字，体现这节课的核心主题
+- 不要用书名号、引号、markdown 标记
+- 只输出标题本身
+
+内容：
+${text}`);
+  return result.trim().replace(/^["'「『《]|['"」』》]$/g, '').replace(/\*\*/g, '').replace(/^标题[：:]\s*/i, '').trim();
+}
+
 export async function askKnowledge(question: string, context: string): Promise<string> {
   return callLLM(`基于以下笔记内容回答问题。\n\n笔记：${context}\n\n问题：${question}`);
 }

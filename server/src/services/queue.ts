@@ -4,7 +4,7 @@ import { eq, and } from 'drizzle-orm';
 import { snowflake } from '../utils/snowflake.js';
 import { transcribe } from './asr.js';
 import { recognize } from './ocr.js';
-import { generateSummary, generateExamPoints, generateMindMap, classifyCourse } from './llm.js';
+import { generateSummary, generateExamPoints, generateMindMap, classifyCourse, generateTags, generateTitleFromTranscript } from './llm.js';
 import { execSync } from 'child_process';
 import { existsSync, unlinkSync, statSync } from 'fs';
 import { join } from 'path';
@@ -218,8 +218,8 @@ export async function processQueue() {
             const wavAbs = join(process.cwd(), note.audioPath);
             if (existsSync(wavAbs)) {
               const opusPath = wavAbs.replace('.wav', '.opus');
-              // 去除 >10s 静音段 → 响度归一化 → Opus 24kbps
-              execSync(`ffmpeg -y -i "${wavAbs}" -af "silenceremove=stop_periods=-1:stop_duration=10:stop_threshold=-35dB,loudnorm=I=-16:TP=-1.5:LRA=11" -c:a libopus -b:a 24k -ar 16000 -ac 1 "${opusPath}"`, { stdio: 'pipe' });
+              // 响度归一化 → Opus 24kbps（保留原始节奏，不去静音）
+              execSync(`ffmpeg -y -i "${wavAbs}" -af "loudnorm=I=-16:TP=-1.5:LRA=11" -c:a libopus -b:a 24k -ar 16000 -ac 1 "${opusPath}"`, { stdio: 'pipe' });
               const opusKey = `audio/${note.id}.opus`;
               const { key: savedKey } = await uploadFile(opusKey, require('fs').readFileSync(opusPath));
               db.update(notes).set({ audioPath: savedKey }).where(eq(notes.id, note.id)).run();
@@ -252,17 +252,28 @@ export async function processQueue() {
           db.update(notes).set({ aiSummary: summary }).where(eq(notes.id, note.id)).run();
 
           let titleForClassify = note.title;
-          // 用摘要自动生成标题（免费 DeepSeek-R1）
-          if (summary && note.title.startsWith('课堂笔记')) {
+          // 用摘要+转写前缀自动生成标题（覆盖所有默认/空标题）
+          const DEFAULT_TITLE_PATTERNS = ['课堂笔记', '网页录音笔记', '测试', '新建', '未命名'];
+          const isDefaultTitle = !note.title || DEFAULT_TITLE_PATTERNS.some(p => note.title.startsWith(p)) || note.title.length < 4;
+          if (summary && isDefaultTitle) {
             try {
-              const newTitle = await generateTitle(summary);
-              if (newTitle) {
+              const newTitle = await generateTitleFromTranscript(note.rawTranscript, summary);
+              if (newTitle && newTitle.length >= 4 && newTitle.length <= 40) {
                 titleForClassify = newTitle;
                 db.update(notes).set({ title: newTitle, updatedAt: new Date().toISOString() }).where(eq(notes.id, note.id)).run();
                 console.log(`[Queue] Title generated: ${newTitle}`);
               }
             } catch (e) { /* 标题生成失败不影响主流程 */ }
           }
+
+          // AI 打标签
+          try {
+            const tags = await generateTags(note.rawTranscript, summary);
+            if (tags) {
+              db.update(notes).set({ tags, updatedAt: new Date().toISOString() }).where(eq(notes.id, note.id)).run();
+              console.log(`[Queue] Tags generated: ${tags}`);
+            }
+          } catch (e) { /* 标签生成失败不影响主流程 */ }
 
           if (summary && !note.courseId) {
             const courseList = db.select().from(courses).where(eq(courses.userId, note.userId)).all();
@@ -389,35 +400,6 @@ async function polishChunk(chunk: string, seq: number): Promise<string> {
     `请修正第${seq}段语音识别文本的错别字，理顺重复语句，补全不完整句子。`,
     chunk, 2000
   );
-}
-
-/**
- * 用 DeepSeek-R1（免费）根据摘要生成简短标题
- */
-async function generateTitle(summary: string): Promise<string> {
-  const env = getEnv();
-  if (!env.ASR_API_KEY || !summary) return '';
-
-  const res = await fetch('https://api.siliconflow.cn/v1/chat/completions', {
-    method: 'POST',
-    headers: {
-      'Authorization': `Bearer ${env.ASR_API_KEY}`,
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify({
-      model: 'Qwen/Qwen2.5-7B-Instruct',
-      messages: [
-        { role: 'system', content: '你只输出标题本身，10-20字。' },
-        { role: 'user', content: '生成标题：' + summary },
-      ],
-      max_tokens: 50,
-      temperature: 0.1,
-    }),
-  });
-
-  if (!res.ok) return '';
-  const data = await res.json() as { choices?: Array<{ message?: { content?: string } }> };
-  return data.choices?.[0]?.message?.content?.trim().replace(/^["'「『《]|['"」』》]$/g, '').replace(/\*\*/g, '') || '';
 }
 
 // 恢复 stuck running 任务（进程 crash 残留）

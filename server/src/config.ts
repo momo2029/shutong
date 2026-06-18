@@ -24,6 +24,8 @@ const env = {
   LLM_MODEL: process.env.LLM_MODEL || 'mimo-v2.5-pro',
   TTS_MODEL: process.env.TTS_MODEL || 'FunAudioLLM/CosyVoice2-0.5B',
   ALLOW_FIRST_USER_ADMIN: process.env.ALLOW_FIRST_USER_ADMIN === 'true',
+  // CORS 白名单，逗号分隔。低代码平台/App 域名加这里
+  CORS_ORIGINS: (process.env.CORS_ORIGINS || '').split(',').map(s => s.trim()).filter(Boolean),
 };
 
 export function getEnv() {

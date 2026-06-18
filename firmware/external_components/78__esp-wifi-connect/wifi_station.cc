@@ -249,6 +249,10 @@ void WifiStation::StartConnect() {
         wifi_config.sta.failure_retry_cnt = failure_retry_cnt_;
     }
     wifi_config.sta.listen_interval = 10;
+    // 兼容 WPA2/WPA3 混合路由器：WPA3 强制要求 PMF，开启 capable（不强制 required，
+    // 这样 WPA2-only 路由器也能连）。否则会卡在 4-way handshake 阶段 AUTH_EXPIRE。
+    wifi_config.sta.pmf_cfg.capable = true;
+    wifi_config.sta.pmf_cfg.required = false;
     ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, &wifi_config));
 
     reconnect_count_ = 0;

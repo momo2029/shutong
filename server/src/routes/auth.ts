@@ -24,7 +24,7 @@ app.post('/login', async (c) => {
 
   const token = await signJWT({ sub: u.id });
   c.header('Set-Cookie', `token=${token}; HttpOnly; Secure; Path=/; Max-Age=604800; SameSite=Lax`);
-  return c.json({ ok: true, user: { id: u.id, email: u.email, nickname: u.nickname, role: u.role, plan: u.plan } });
+  return c.json({ ok: true, token, user: { id: u.id, email: u.email, nickname: u.nickname, role: u.role, plan: u.plan } });
 });
 
 // POST /api/auth/wechat/qrcode — proxy to WeChat auth service
@@ -80,7 +80,7 @@ app.post('/wechat/verify', async (c) => {
 
   const token = await signJWT({ sub: user.id });
   c.header('Set-Cookie', `token=${token}; HttpOnly; Secure; Path=/; Max-Age=604800; SameSite=Lax`);
-  return c.json({ ok: true });
+  return c.json({ ok: true, token, user: { id: user.id, email: user.email, nickname: user.nickname, role: user.role, plan: user.plan } });
 });
 
 // POST /api/auth/logout
@@ -91,13 +91,13 @@ app.post('/logout', (c) => {
 
 // GET /api/auth/me
 app.get('/me', async (c) => {
-  const cookie = c.req.header('cookie') || '';
-  const match = cookie.match(/token=([^;]+)/);
-  if (!match) return c.json({ user: null });
+  const { extractToken } = await import('../middleware/auth.js');
+  const token = extractToken(c);
+  if (!token) return c.json({ user: null });
 
   try {
     const { verifyJWT } = await import('../utils/jwt.js');
-    const payload = await verifyJWT(match[1]);
+    const payload = await verifyJWT(token);
     const u = db.select().from(users).where(eq(users.id, payload.sub as string)).get();
     if (!u) return c.json({ user: null });
     return c.json({ user: { id: u.id, email: u.email, nickname: u.nickname, role: u.role, plan: u.plan } });

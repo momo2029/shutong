@@ -5,13 +5,22 @@ import { users } from '../db/schema.js';
 import { eq } from 'drizzle-orm';
 import type { Vars } from '../app.js';
 
-export const authMiddleware = createMiddleware<{ Variables: Vars }>(async (c, next) => {
+// 从请求中提取 token：优先 Authorization: Bearer，其次 cookie（兼容网页）
+export function extractToken(c: { req: { header: (n: string) => string | undefined } }): string | null {
+  const authHeader = c.req.header('authorization') || '';
+  const bearerMatch = authHeader.match(/^Bearer\s+(.+)$/i);
+  if (bearerMatch) return bearerMatch[1];
   const cookie = c.req.header('cookie') || '';
-  const match = cookie.match(/token=([^;]+)/);
-  if (!match) return c.json({ error: 'Unauthorized' }, 401);
+  const cookieMatch = cookie.match(/token=([^;]+)/);
+  return cookieMatch?.[1] || null;
+}
+
+export const authMiddleware = createMiddleware<{ Variables: Vars }>(async (c, next) => {
+  const token = extractToken(c);
+  if (!token) return c.json({ error: 'Unauthorized' }, 401);
 
   try {
-    const payload = await verifyJWT(match[1]);
+    const payload = await verifyJWT(token);
     const u = db.select().from(users).where(eq(users.id, payload.sub as string)).get();
     if (!u) return c.json({ error: 'User not found' }, 401);
     c.set('user', {

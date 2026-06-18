@@ -1,4 +1,5 @@
 import { Hono } from 'hono';
+import { cors } from 'hono/cors';
 import { serveStatic } from '@hono/node-server/serve-static';
 import { getEnv } from './config.js';
 import { db, raw } from './db/index.js';
@@ -80,6 +81,18 @@ app.use('*', async (c, next) => {
   await next();
   c.header('X-App-Version', '20260605-2');
 });
+
+// CORS：允许低代码平台/App 跨域调用 /api/*
+const corsOrigins = getEnv().CORS_ORIGINS;
+if (corsOrigins.length > 0) {
+  app.use('/api/*', cors({
+    origin: (origin) => corsOrigins.includes(origin) ? origin : null,
+    allowHeaders: ['Authorization', 'Content-Type'],
+    allowMethods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+    credentials: true,
+    maxAge: 86400,
+  }));
+}
 
 // Request ID middleware + slow request warning
 app.use('*', async (c, next) => {
@@ -176,8 +189,10 @@ app.get('/devices/:id', async (c) => {
     const payload = await verifyJWT(match[1]);
     const device = db.select().from(devices).where(and(eq(devices.id, c.req.param('id')), eq(devices.userId, payload.sub as string))).get();
     if (!device) return (await c.var.render('devices/list.ejs', { title: '我的设备', devices: [] }));
-    const noteList = db.select().from(notes).where(eq(notes.deviceId, device.id)).orderBy(notes.createdAt).all();
-    return c.var.render('devices/detail.ejs', { title: device.name, device, notes: noteList });
+    const recordingNote = db.select().from(notes)
+      .where(and(eq(notes.deviceId, device.id), eq(notes.status, 'recording')))
+      .orderBy(notes.createdAt).all()[0] || null;
+    return c.var.render('devices/detail.ejs', { title: device.name, device, recordingNote });
   } catch (e) { return c.redirect('/auth/login'); }
 });
 app.get('/courses', async (c) => {
@@ -265,19 +280,66 @@ app.get('/notes', async (c) => {
   const match = cookie.match(/token=([^;]+)/);
   let noteList: any[] = [];
   let totalNotes = 0;
+  let hiddenCount = 0;
+  let courseList: any[] = [];
   const page = Math.max(1, parseInt(c.req.query('page') || '1'));
   const perPage = 15;
+  // 筛选参数
+  const statusFilter = c.req.query('status') || '';
+  const courseFilter = c.req.query('course') || '';
+  const showAll = c.req.query('show') === 'all'; // 显示空笔记
   if (match) {
     try {
       const { verifyJWT } = await import('./utils/jwt.js');
       const payload = await verifyJWT(match[1]);
-      const all = db.select().from(notes).where(eq(notes.userId, payload.sub as string)).orderBy(desc(notes.createdAt)).all();
-      totalNotes = all.length;
-      noteList = all.slice((page - 1) * perPage, page * perPage);
+      const uid = payload.sub as string;
+      courseList = db.select().from(courses).where(eq(courses.userId, uid)).all();
+      // 联表查课程名
+      const all = raw.prepare(`
+        SELECT n.*, c.name AS course_name
+        FROM notes n
+        LEFT JOIN courses c ON c.id = n.course_id
+        WHERE n.user_id = ?
+        ORDER BY n.created_at DESC
+      `).all(uid) as Array<any>;
+      // 标记空笔记：转写<20字 或 (时长<15s 且无转写)。无论 status 如何。
+      const annotated = all.map(n => {
+        const transcriptLen = (n.raw_transcript || '').trim().length;
+        const isFailed = n.status === 'failed';
+        const isEmpty = isFailed ? false : (transcriptLen < 20 && (!n.duration || n.duration < 15));
+        return {
+          ...n,
+          wordCount: (n.raw_transcript || '').length,
+          isEmpty,
+        };
+      });
+      hiddenCount = annotated.filter(n => n.isEmpty).length;
+      // 应用筛选
+      let filtered = annotated;
+      if (statusFilter) filtered = filtered.filter(n => n.status === statusFilter);
+      if (courseFilter) filtered = filtered.filter(n => n.course_id === courseFilter);
+      if (!showAll) filtered = filtered.filter(n => !n.isEmpty);
+      totalNotes = filtered.length;
+      noteList = filtered.slice((page - 1) * perPage, page * perPage);
     } catch (e) { /* fall through */ }
   }
   const totalPages = Math.ceil(totalNotes / perPage);
-  return c.var.render('notes/list.ejs', { title: '笔记', notes: noteList, page, totalPages });
+  // 查正在录音的笔记（用户级别，独立于筛选/分页）
+  let recordingNote: any = null;
+  if (match) {
+    try {
+      const { verifyJWT } = await import('./utils/jwt.js');
+      const payload = await verifyJWT(match[1]);
+      recordingNote = db.select().from(notes)
+        .where(and(eq(notes.userId, payload.sub as string), eq(notes.status, 'recording')))
+        .orderBy(notes.createdAt).all()[0] || null;
+    } catch { /* ignore */ }
+  }
+  return c.var.render('notes/list.ejs', {
+    title: '笔记', notes: noteList, page, totalPages,
+    statusFilter, courseFilter, showAll,
+    hiddenCount, courseList, recordingNote,
+  });
 });
 app.get('/notes/record', async (c) => {
   const cookie = c.req.header('cookie') || '';

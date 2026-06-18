@@ -5,25 +5,118 @@
     <a href="/notes/search" class="btn btn-outline">搜索</a>
   </div>
 </div>
+
+<% if (recordingNote) { %>
+<a href="/notes/<%= recordingNote.id %>" class="card mt-2" style="display:flex;align-items:center;gap:14px;padding:14px 18px;border:1px solid var(--accent,#f59e0b);background:linear-gradient(90deg,#fffbeb,#fff);text-decoration:none;">
+  <span class="recording-pulse" style="width:12px;height:12px;border-radius:50%;background:#ef4444;box-shadow:0 0 0 0 rgba(239,68,68,0.7);animation:recpulse 1.4s infinite;flex-shrink:0;"></span>
+  <div style="flex:1;min-width:0;">
+    <div style="font-weight:600;color:#111828;truncate;"><%= recordingNote.title || '正在录音…' %></div>
+    <div style="font-size:13px;color:#6b7280;">
+      <span class="tag tag-recording" style="margin-right:6px;">● 录制中</span>
+      <%
+        const rTs = recordingNote.createdAt;
+        let rDate = '未知';
+        if (rTs) {
+          const d = new Date(typeof rTs === 'string' ? rTs.replace(' ', 'T') : rTs);
+          if (!isNaN(d.getTime())) rDate = new Date(d.getTime() + 8*3600000).toISOString().replace('T',' ').substring(0,16);
+        }
+      %>
+      <span><%= rDate %></span>
+    </div>
+  </div>
+  <span class="btn btn-outline btn-sm" style="flex-shrink:0;">查看</span>
+</a>
+<style>
+@keyframes recpulse {
+  0% { box-shadow: 0 0 0 0 rgba(239,68,68,0.6); }
+  70% { box-shadow: 0 0 0 10px rgba(239,68,68,0); }
+  100% { box-shadow: 0 0 0 0 rgba(239,68,68,0); }
+}
+</style>
+<% } %>
+
+<!-- 筛选条 -->
+<form method="get" action="/notes" class="card mt-2" style="padding:12px;display:flex;gap:12px;align-items:center;flex-wrap:wrap;font-size:14px;">
+  <div style="display:flex;gap:6px;align-items:center;">
+    <span style="color:var(--text-muted);">状态：</span>
+    <select name="status" class="form-input" style="width:auto;padding:4px 8px;" onchange="this.form.submit()">
+      <option value="">全部</option>
+      <option value="ready" <%= statusFilter === 'ready' ? 'selected' : '' %>>完成</option>
+      <option value="processing" <%= statusFilter === 'processing' ? 'selected' : '' %>>处理中</option>
+      <option value="failed" <%= statusFilter === 'failed' ? 'selected' : '' %>>失败</option>
+      <option value="paused" <%= statusFilter === 'paused' ? 'selected' : '' %>>已暂停</option>
+      <option value="recording" <%= statusFilter === 'recording' ? 'selected' : '' %>>录制中</option>
+    </select>
+  </div>
+  <% if (courseList && courseList.length > 0) { %>
+  <div style="display:flex;gap:6px;align-items:center;">
+    <span style="color:var(--text-muted);">课程：</span>
+    <select name="course" class="form-input" style="width:auto;padding:4px 8px;" onchange="this.form.submit()">
+      <option value="">全部</option>
+      <% for (const c of courseList) { %>
+      <option value="<%= c.id %>" <%= courseFilter === c.id ? 'selected' : '' %>><%= c.name %></option>
+      <% } %>
+    </select>
+  </div>
+  <% } %>
+  <label style="display:flex;align-items:center;gap:4px;cursor:pointer;color:var(--text-muted);">
+    <input type="checkbox" name="show" value="all" <%= showAll ? 'checked' : '' %> onchange="this.form.submit()" /> 显示空笔记
+  </label>
+  <% if (hiddenCount > 0 && !showAll) { %>
+  <span style="color:var(--text-muted);font-size:13px;">（已隐藏 <%= hiddenCount %> 条空笔记）</span>
+  <% } %>
+  <% if (statusFilter || courseFilter || showAll) { %>
+  <a href="/notes" class="btn btn-outline btn-sm">清空筛选</a>
+  <% } %>
+</form>
+
 <% if (notes.length === 0) { %>
 <div class="card mt-2">
-  <p class="text-muted text-center">暂无笔记，连接设备开始录音或点击"网页录音"</p>
+  <p class="text-muted text-center" style="padding:20px 0;">
+    <%= (statusFilter || courseFilter) ? '没有匹配的笔记' : '暂无笔记，连接设备开始录音或点击"网页录音"' %>
+  </p>
 </div>
 <% } else { %>
 <div class="note-list mt-2">
-  <% notes.forEach(note => { %>
-  <div class="note-card">
+  <% notes.forEach(note => {
+    const isEmpty = note.isEmpty;
+    const tags = (note.tags || '').split(',').filter(Boolean);
+  %>
+  <div class="note-card" style="<%= isEmpty ? 'opacity:0.55;' : '' %>">
     <div class="note-card-main">
       <div class="note-card-title">
-        <a href="/notes/<%= note.id %>"><%= note.title %></a>
-      </div>
-      <div class="note-card-meta">
-        <span><%= note.createdAt && note.createdAt[0] !== '(' ? new Date(new Date(note.createdAt).getTime() + 8*3600000).toISOString().replace('T',' ').substring(0,19) : '未知' %></span>
-        <% if (note.duration) { %>
-          <span><%= (note.duration / 60).toFixed(0) %> 分 <%= note.duration % 60 %> 秒</span>
+        <a href="/notes/<%= note.id %>"><%= note.title || '未命名笔记' %></a>
+        <% if (isEmpty) { %>
+        <span style="font-size:11px;color:#999;margin-left:6px;">（内容过少）</span>
         <% } %>
-        <% if (note.tags) { %>
-          <span><%= note.tags %></span>
+      </div>
+      <% if (tags.length > 0) { %>
+      <div style="margin:4px 0;display:flex;gap:4px;flex-wrap:wrap;">
+        <% for (const t of tags) { %>
+        <span style="background:#eef2ff;color:#4338ca;padding:2px 8px;border-radius:10px;font-size:12px;"><%= t %></span>
+        <% } %>
+      </div>
+      <% } %>
+      <div class="note-card-meta">
+        <%
+          const rawTs = note.created_at || note.createdAt;
+          let dateStr = '未知';
+          if (rawTs) {
+            const d = new Date(typeof rawTs === 'string' ? rawTs.replace(' ', 'T') : rawTs);
+            if (!isNaN(d.getTime())) {
+              dateStr = new Date(d.getTime() + 8*3600000).toISOString().replace('T',' ').substring(0,16);
+            }
+          }
+        %>
+        <span><%= dateStr %></span>
+        <% if (note.duration) { %>
+        <span><%= (note.duration / 60).toFixed(0) %> 分 <%= note.duration % 60 %> 秒</span>
+        <% } %>
+        <% if (note.wordCount > 0) { %>
+        <span><%= note.wordCount %> 字</span>
+        <% } %>
+        <% if (note.course_name) { %>
+        <span style="color:var(--primary);">📚 <%= note.course_name %></span>
         <% } %>
       </div>
     </div>
@@ -48,13 +141,13 @@
 <% if (totalPages > 1) { %>
 <div class="pagination">
   <% if (page > 1) { %>
-    <a href="/notes?page=<%= page - 1 %>" class="btn btn-outline btn-sm">← 上一页</a>
+    <a href="/notes?page=<%= page - 1 %><%= statusFilter ? '&status=' + statusFilter : '' %><%= courseFilter ? '&course=' + courseFilter : '' %><%= showAll ? '&show=all' : '' %>" class="btn btn-outline btn-sm">← 上一页</a>
   <% } else { %>
     <span class="btn btn-outline btn-sm disabled">← 上一页</span>
   <% } %>
   <span class="pagination-info"><%= page %> / <%= totalPages %></span>
   <% if (page < totalPages) { %>
-    <a href="/notes?page=<%= page + 1 %>" class="btn btn-outline btn-sm">下一页 →</a>
+    <a href="/notes?page=<%= page + 1 %><%= statusFilter ? '&status=' + statusFilter : '' %><%= courseFilter ? '&course=' + courseFilter : '' %><%= showAll ? '&show=all' : '' %>" class="btn btn-outline btn-sm">下一页 →</a>
   <% } else { %>
     <span class="btn btn-outline btn-sm disabled">下一页 →</span>
   <% } %>
